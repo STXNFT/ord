@@ -699,18 +699,15 @@ impl Index {
 
   pub(crate) fn get_inscriptions(
     &self,
-    n: Option<usize>,
+    utxos: BTreeMap<OutPoint, Amount>,
   ) -> Result<BTreeMap<SatPoint, InscriptionId>> {
-    Ok(
-      self
-        .database
-        .begin_read()?
-        .open_table(SATPOINT_TO_INSCRIPTION_ID)?
-        .range::<&[u8; 44]>(&[0; 44]..)?
-        .map(|(satpoint, id)| (Entry::load(*satpoint.value()), Entry::load(*id.value())))
-        .take(n.unwrap_or(usize::MAX))
-        .collect(),
-    )
+    let mut inscriptions = BTreeMap::new();
+    let rtx = self.database.begin_read()?;
+    let table = rtx.open_multimap_table(SATPOINT_TO_INSCRIPTION_ID)?;
+    for utxo in utxos.keys() {
+      inscriptions.extend(Self::inscriptions_on_output(&table, *utxo)?);
+    }
+    Ok(inscriptions)
   }
 
   pub(crate) fn get_homepage_inscriptions(&self) -> Result<Vec<InscriptionId>> {

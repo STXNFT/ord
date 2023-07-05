@@ -10,7 +10,7 @@ pub struct Output {
 pub(crate) fn run(options: Options) -> Result {
   let index = Index::open(&options)?;
   index.update()?;
-get_inscriptions
+
   let unspent_outputs = index.get_unspent_outputs(Wallet::load(&options)?)?;
   let inscriptions = index.get_inscriptions(unspent_outputs.clone())?;
 
