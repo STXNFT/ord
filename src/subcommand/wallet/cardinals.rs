@@ -10,9 +10,10 @@ pub(crate) fn run(options: Options) -> Result {
   let index = Index::open(&options)?;
   index.update()?;
 
-  let unspent_outputs = index.get_unspent_outputs(Wallet::load(&options)?)?;
+  let unspent_outputs = index
+    .get_unspent_outputs(Wallet::load(&options)?)?;
 
-  let inscription_outputs = index
+  let inscribed_utxos = index
     .get_inscriptions(unspent_outputs.clone())?
     .keys()
     .map(|satpoint| satpoint.outpoint)
