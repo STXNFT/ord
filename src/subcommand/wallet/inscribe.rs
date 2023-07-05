@@ -63,7 +63,7 @@ impl Inscribe {
 
     let mut utxos = index.get_unspent_outputs(Wallet::load(&options)?)?;
 
-    let inscriptions = index.get_inscriptions(None)?;
+    let inscriptions = BTreeMap::new();
 
     let commit_tx_change = [get_change_address(&client)?, get_change_address(&client)?];
 
