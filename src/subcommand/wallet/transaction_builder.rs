@@ -107,6 +107,9 @@ pub struct TransactionBuilder {
   unused_change_addresses: Vec<Address>,
   utxos: BTreeSet<OutPoint>,
   target: Target,
+  taker_amount_sats: Option<Amount>,
+  taker_address: Option<Address>,
+  excess_change_address: Option<Address>,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -134,6 +137,9 @@ impl TransactionBuilder {
       change,
       fee_rate,
       Target::Postage,
+      None,
+      None,
+      None,
     )?
     .build_transaction()
   }
@@ -146,6 +152,9 @@ impl TransactionBuilder {
     change: [Address; 2],
     fee_rate: FeeRate,
     output_value: Amount,
+    taker_amount_sats: Option<Amount>,
+    taker_address: Option<Address>,
+    excess_change_address: Option<Address>,
   ) -> Result<Transaction> {
     let dust_value = recipient.script_pubkey().dust_value();
 
@@ -164,6 +173,9 @@ impl TransactionBuilder {
       change,
       fee_rate,
       Target::Value(output_value),
+      taker_amount_sats,
+      taker_address,
+      excess_change_address,
     )?
     .build_transaction()
   }
@@ -187,6 +199,9 @@ impl TransactionBuilder {
     change: [Address; 2],
     fee_rate: FeeRate,
     target: Target,
+    taker_amount_sats: Option<Amount>,
+    taker_address: Option<Address>,
+    excess_change_address: Option<Address>,
   ) -> Result<Self> {
     if change.contains(&recipient) {
       return Err(Error::DuplicateAddress(recipient));
@@ -208,6 +223,9 @@ impl TransactionBuilder {
       recipient,
       unused_change_addresses: change.to_vec(),
       target,
+      taker_amount_sats,
+      taker_address,
+      excess_change_address,
     })
   }
 
@@ -358,15 +376,32 @@ impl TransactionBuilder {
               .fee_rate
               .fee(self.estimate_vbytes() + Self::ADDITIONAL_OUTPUT_VBYTES)
       {
-        tprintln!("stripped {} sats", (value - target).to_sat());
-        self.outputs.last_mut().expect("no outputs found").1 = target;
-        self.outputs.push((
+        let change_address = if self.excess_change_address.is_some() {
+          self.excess_change_address.clone().unwrap()
+        } else {
           self
             .unused_change_addresses
             .pop()
-            .expect("not enough change addresses"),
-          value - target,
-        ));
+            .expect("not enough change addresses")
+        };
+        self.outputs.last_mut().expect("no outputs found").1 = target;
+        if self.taker_amount_sats.clone().is_some() && self.taker_address.clone().is_some() {
+          self.outputs.push((
+            self.taker_address.clone().expect("no taker address found"),
+            self.taker_amount_sats.clone().unwrap(),
+          ));
+          self.outputs.push((
+            change_address,
+            value - target - self.taker_amount_sats.clone().unwrap(),
+          ));
+          tprintln!(
+            "stripped {} sats",
+            (value - target - self.taker_amount_sats.clone().unwrap()).to_sat()
+          );
+        } else {
+          self.outputs.push((change_address, value - target));
+          tprintln!("stripped {} sats", (value - target).to_sat());
+        }
       }
     }
 
@@ -389,6 +424,7 @@ impl TransactionBuilder {
       .last_mut()
       .expect("No output to deduct fee from");
 
+    // tprintln!("{}", total_output_amount.checked_sub(fee).unwrap());
     assert!(
       total_output_amount.checked_sub(fee).unwrap() > Amount::from_sat(sat_offset),
       "invariant: deducting fee does not consume sat",
@@ -577,12 +613,20 @@ impl TransactionBuilder {
           "invariant: sat is at first position in recipient output"
         );
       } else {
+        let is_some_change_address = self
+          .change_addresses
+          .iter()
+          .any(|change_address| change_address.script_pubkey() == output.script_pubkey);
+
+        let is_taker_address = self.taker_address.is_some()
+          && output.script_pubkey == self.taker_address.clone().unwrap().script_pubkey();
+
+        let is_excess_change_address = self.excess_change_address.is_some()
+          && output.script_pubkey == self.excess_change_address.clone().unwrap().script_pubkey();
+
         assert!(
-          self
-            .change_addresses
-            .iter()
-            .any(|change_address| change_address.script_pubkey() == output.script_pubkey),
-          "invariant: all outputs are either change or recipient: unrecognized output {}",
+         is_some_change_address || is_taker_address || is_excess_change_address,
+          "invariant: all outputs are either some change address, an explicit change address, taker address, or recipient: unrecognized output {}",
           output.script_pubkey
         );
       }
@@ -681,6 +725,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -724,6 +771,9 @@ mod tests {
         (change(1), Amount::from_sat(1_724)),
       ],
       target: Target::Postage,
+      taker_amount_sats: None,
+      taker_address: None,
+      excess_change_address: None,
     };
 
     pretty_assert_eq!(
@@ -792,6 +842,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -905,6 +958,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .build()
@@ -924,6 +980,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .build()
@@ -943,6 +1002,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .build()
@@ -962,6 +1024,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -987,6 +1052,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -1035,6 +1103,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -1103,6 +1174,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -1131,6 +1205,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -1157,6 +1234,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -1180,6 +1260,9 @@ mod tests {
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
       Target::Postage,
+      None,
+      None,
+      None,
     )
     .unwrap()
     .select_outgoing()
@@ -1213,6 +1296,9 @@ mod tests {
         (change(1), Amount::from_sat(1_774)),
       ],
       target: Target::Postage,
+      taker_address: None,
+      taker_amount_sats: None,
+      excess_change_address: None,
     }
     .build()
     .unwrap();
@@ -1242,6 +1328,9 @@ mod tests {
         (change(0), Amount::from_sat(1_774)),
       ],
       target: Target::Postage,
+      taker_amount_sats: None,
+      taker_address: None,
+      excess_change_address: None,
     }
     .build()
     .unwrap();
@@ -1330,7 +1419,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(1000)
+        Amount::from_sat(1000),
+        None,
+        None,
+        None
       ),
       Ok(Transaction {
         version: 1,
@@ -1356,7 +1448,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(1500)
+        Amount::from_sat(1500),
+        None,
+        None,
+        None
       ),
       Ok(Transaction {
         version: 1,
@@ -1379,7 +1474,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(1)
+        Amount::from_sat(1),
+        None,
+        None,
+        None
       ),
       Err(Error::Dust {
         output_value: Amount::from_sat(1),
@@ -1403,7 +1501,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(1000)
+        Amount::from_sat(1000),
+        None,
+        None,
+        None
       ),
       Err(Error::NotEnoughCardinalUtxos),
     )
@@ -1424,7 +1525,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(4.0).unwrap(),
-        Amount::from_sat(1000)
+        Amount::from_sat(1000),
+        None,
+        None,
+        None
       ),
       Err(Error::NotEnoughCardinalUtxos),
     )
@@ -1463,7 +1567,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(707)
+        Amount::from_sat(707),
+        None,
+        None,
+        None
       ),
       Ok(Transaction {
         version: 1,
@@ -1508,7 +1615,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(5.0).unwrap(),
-        Amount::from_sat(1000)
+        Amount::from_sat(1000),
+        None,
+        None,
+        None
       ),
       Ok(Transaction {
         version: 1,
@@ -1531,7 +1641,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(6.0).unwrap(),
-        Amount::from_sat(1000)
+        Amount::from_sat(1000),
+        None,
+        None,
+        None
       ),
       Err(Error::NotEnoughCardinalUtxos)
     );
@@ -1549,7 +1662,10 @@ mod tests {
         recipient(),
         [recipient(), change(1)],
         FeeRate::try_from(0.0).unwrap(),
-        Amount::from_sat(1000)
+        Amount::from_sat(1000),
+        None,
+        None,
+        None
       ),
       Err(Error::DuplicateAddress(recipient()))
     );
@@ -1567,7 +1683,10 @@ mod tests {
         recipient(),
         [change(0), change(0)],
         FeeRate::try_from(0.0).unwrap(),
-        Amount::from_sat(1000)
+        Amount::from_sat(1000),
+        None,
+        None,
+        None
       ),
       Err(Error::DuplicateAddress(change(0)))
     );
@@ -1585,7 +1704,10 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(2.0).unwrap(),
-        Amount::from_sat(1500)
+        Amount::from_sat(1500),
+        None,
+        None,
+        None
       ),
       Ok(Transaction {
         version: 1,

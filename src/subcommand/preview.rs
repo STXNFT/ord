@@ -86,6 +86,9 @@ impl Preview {
             dry_run: false,
             no_limit: false,
             destination: None,
+            taker_address: None,
+            taker_sats_amount: None,
+            excess_change_address: None,
           },
         )),
       }
