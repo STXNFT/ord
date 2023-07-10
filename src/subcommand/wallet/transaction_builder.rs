@@ -388,15 +388,15 @@ impl TransactionBuilder {
         if self.taker_amount_sats.clone().is_some() && self.taker_address.clone().is_some() {
           self.outputs.push((
             self.taker_address.clone().expect("no taker address found"),
-            self.taker_amount_sats.clone().unwrap(),
+            self.taker_amount_sats.unwrap(),
           ));
           self.outputs.push((
             change_address,
-            value - target - self.taker_amount_sats.clone().unwrap(),
+            value - target - self.taker_amount_sats.unwrap(),
           ));
           tprintln!(
             "stripped {} sats",
-            (value - target - self.taker_amount_sats.clone().unwrap()).to_sat()
+            (value - target - self.taker_amount_sats.unwrap()).to_sat()
           );
         } else {
           self.outputs.push((change_address, value - target));
@@ -1162,7 +1162,9 @@ mod tests {
   }
 
   #[test]
-  #[should_panic(expected = "invariant: all outputs are either change or recipient")]
+  #[should_panic(
+    expected = "invariant: all outputs are either some change address, an explicit change address, taker address, or recipient: unrecognized output"
+  )]
   fn invariant_all_output_are_recognized() {
     let utxos = vec![(outpoint(1), Amount::from_sat(10_000))];
 

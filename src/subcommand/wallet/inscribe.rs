@@ -54,7 +54,7 @@ pub(crate) struct Inscribe {
   #[clap(long, help = "Sends taker_sats_amount to <TAKER_ADDRESS>.")]
   pub(crate) taker_address: Option<Address>,
   #[clap(long, help = "Sends taker_address <TAKER_SATS_AMOUNT> sats.")]
-  pub(crate) taker_sats_amount: Option<Amount>,
+  pub(crate) taker_sats_amount: Option<u64>,
 
   #[clap(
     long,
@@ -88,6 +88,10 @@ impl Inscribe {
       None => get_change_address(&client)?,
     };
 
+    let taker_amount_sats = match self.taker_sats_amount {
+      Some(amount) => Some(Amount::from_sat(amount)),
+      None => None,
+    };
     let (unsigned_commit_tx, reveal_tx, recovery_key_pair) =
       Inscribe::create_inscription_transactions(
         self.satpoint,
@@ -100,7 +104,7 @@ impl Inscribe {
         self.commit_fee_rate.unwrap_or(self.fee_rate),
         self.fee_rate,
         self.no_limit,
-        self.taker_sats_amount,
+        taker_amount_sats,
         self.taker_address,
         self.excess_change_address,
       )?;
