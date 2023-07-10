@@ -88,10 +88,7 @@ impl Inscribe {
       None => get_change_address(&client)?,
     };
 
-    let taker_amount_sats = match self.taker_sats_amount {
-      Some(amount) => Some(Amount::from_sat(amount)),
-      None => None,
-    };
+    let taker_amount_sats = self.taker_sats_amount.map(Amount::from_sat);
     let (unsigned_commit_tx, reveal_tx, recovery_key_pair) =
       Inscribe::create_inscription_transactions(
         self.satpoint,
