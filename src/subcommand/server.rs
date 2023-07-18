@@ -153,6 +153,10 @@ impl Server {
         .route("/bounties", get(Self::bounties))
         .route("/clock", get(Self::clock))
         .route("/content/:inscription_id", get(Self::content))
+        .route(
+          "/content/:inscription_id/mempool",
+          get(Self::content_mempool),
+        )
         .route("/faq", get(Self::faq))
         .route("/favicon.ico", get(Self::favicon))
         .route("/feed.xml", get(Self::feed))
@@ -768,6 +772,25 @@ impl Server {
 
     let inscription = index
       .get_inscription_by_id(inscription_id)?
+      .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
+
+    Ok(
+      Self::content_response(inscription)
+        .ok_or_not_found(|| format!("inscription {inscription_id} content"))?
+        .into_response(),
+    )
+  }
+  async fn content_mempool(
+    Extension(index): Extension<Arc<Index>>,
+    Extension(config): Extension<Arc<Config>>,
+    Path(inscription_id): Path<InscriptionId>,
+  ) -> ServerResult<Response> {
+    if config.is_hidden(inscription_id) {
+      return Ok(PreviewUnknownHtml.into_response());
+    }
+
+    let inscription = index
+      .get_mempool_inscription_by_id(inscription_id)?
       .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
 
     Ok(

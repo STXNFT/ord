@@ -598,6 +598,17 @@ impl Index {
     }))
   }
 
+  pub(crate) fn get_mempool_inscription_by_id(
+    &self,
+    inscription_id: InscriptionId,
+  ) -> Result<Option<Inscription>> {
+    Ok(self.get_transaction(inscription_id.txid)?.and_then(|tx| {
+      Inscription::from_transaction(&tx)
+        .get(inscription_id.index as usize)
+        .map(|transaction_inscription| transaction_inscription.inscription.clone())
+    }))
+  }
+
   pub(crate) fn get_inscriptions_on_output(
     &self,
     outpoint: OutPoint,

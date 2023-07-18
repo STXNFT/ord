@@ -460,7 +460,7 @@ mod tests {
     let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e".parse().unwrap();
     let reveal_address = recipient();
     let taker_address = change(2);
-    let taker_amount_sats = Amount::from_sat(5000);
+    let taker_amount_sats = Amount::from_sat(8000);
 
     let (commit_tx, reveal_tx, _private_key) = Inscribe::create_inscription_transactions(
       Some(satpoint(1, 0)),
