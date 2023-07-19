@@ -611,7 +611,7 @@ impl Index {
     }))
   }
 
-  pub(crate) fn get_mempool_inscription_by_id(
+  pub(crate) fn get_inscription_by_id_including_mempool(
     &self,
     inscription_id: InscriptionId,
   ) -> Result<Option<Inscription>> {
