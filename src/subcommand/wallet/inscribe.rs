@@ -3,15 +3,16 @@ use {
   crate::wallet::Wallet,
   bitcoin::{
     blockdata::{opcodes, script},
+    key::PrivateKey,
+    key::{TapTweak, TweakedKeyPair, TweakedPublicKey, UntweakedKeyPair},
+    locktime::absolute::LockTime,
     policy::MAX_STANDARD_TX_WEIGHT,
-    schnorr::{TapTweak, TweakedKeyPair, TweakedPublicKey, UntweakedKeyPair},
     secp256k1::{
       self, constants::SCHNORR_SIGNATURE_SIZE, rand, schnorr::Signature, Secp256k1, XOnlyPublicKey,
     },
-    util::key::PrivateKey,
-    util::sighash::{Prevouts, SighashCache},
-    util::taproot::{ControlBlock, LeafVersion, TapLeafHash, TaprootBuilder},
-    PackedLockTime, SchnorrSighashType, Witness,
+    sighash::{Prevouts, SighashCache, TapSighashType},
+    taproot::{ControlBlock, LeafVersion, TapLeafHash, TaprootBuilder},
+    ScriptBuf, Witness,
   },
   bitcoincore_rpc::bitcoincore_rpc_json::{ImportDescriptors, Timestamp},
   bitcoincore_rpc::Client,
@@ -49,10 +50,10 @@ pub(crate) struct Inscribe {
   #[clap(long, help = "Don't sign or broadcast transactions.")]
   pub(crate) dry_run: bool,
   #[clap(long, help = "Send inscription to <DESTINATION>.")]
-  pub(crate) destination: Option<Address>,
+  pub(crate) destination: Option<Address<NetworkUnchecked>>,
 
   #[clap(long, help = "Sends taker_sats_amount to <TAKER_ADDRESS>.")]
-  pub(crate) taker_address: Option<Address>,
+  pub(crate) taker_address: Option<Address<NetworkUnchecked>>,
   #[clap(long, help = "Sends taker_address <TAKER_SATS_AMOUNT> sats.")]
   pub(crate) taker_sats_amount: Option<u64>,
 
@@ -60,7 +61,7 @@ pub(crate) struct Inscribe {
     long,
     help = "Sends excess sats from the commit_tx to <EXCESS_CHANGE_ADDRESS>."
   )]
-  pub(crate) excess_change_address: Option<Address>,
+  pub(crate) excess_change_address: Option<Address<NetworkUnchecked>>,
 }
 
 impl Inscribe {
@@ -76,16 +77,24 @@ impl Inscribe {
 
     let inscriptions = index.get_inscriptions(utxos.clone())?;
 
-    let commit_tx_change = [get_change_address(&client)?, get_change_address(&client)?];
+    let commit_tx_change = [
+      get_change_address(&client, &options)?,
+      get_change_address(&client, &options)?,
+    ];
 
     let reveal_tx_destination = match self.destination {
-      Some(address) => {
-        options
-          .chain()
-          .check_address_is_valid_for_network(&address)?;
-        address
-      }
-      None => get_change_address(&client)?,
+      Some(address) => address.require_network(options.chain().network())?,
+      None => get_change_address(&client, &options)?,
+    };
+
+    let taker_address_or_none: Option<Address> = match self.taker_address {
+      Some(address) => Some(address.require_network(options.chain().network())?),
+      None => None,
+    };
+
+    let excess_change_address_or_none: Option<Address> = match self.excess_change_address {
+      Some(address) => Some(address.require_network(options.chain().network())?),
+      None => None,
     };
 
     let taker_amount_sats = self.taker_sats_amount.map(Amount::from_sat);
@@ -102,8 +111,8 @@ impl Inscribe {
         self.fee_rate,
         self.no_limit,
         taker_amount_sats,
-        self.taker_address,
-        self.excess_change_address,
+        taker_address_or_none,
+        excess_change_address_or_none,
       )?;
 
     utxos.insert(
@@ -232,8 +241,8 @@ impl Inscribe {
     let (public_key, _parity) = XOnlyPublicKey::from_keypair(&key_pair);
 
     let reveal_script = inscription.append_reveal_script(
-      script::Builder::new()
-        .push_slice(&public_key.serialize())
+      ScriptBuf::builder()
+        .push_slice(public_key.serialize())
         .push_opcode(opcodes::all::OP_CHECKSIG),
     );
 
@@ -310,12 +319,12 @@ impl Inscribe {
         0,
         &Prevouts::All(&[output]),
         TapLeafHash::from_script(&reveal_script, LeafVersion::TapScript),
-        SchnorrSighashType::Default,
+        TapSighashType::Default,
       )
       .expect("signature hash should compute");
 
     let signature = secp256k1.sign_schnorr(
-      &secp256k1::Message::from_slice(signature_hash.as_inner())
+      &secp256k1::Message::from_slice(signature_hash.as_ref())
         .expect("should be cryptographically secure hash"),
       &key_pair,
     );
@@ -340,7 +349,7 @@ impl Inscribe {
 
     let reveal_weight = reveal_tx.weight();
 
-    if !no_limit && reveal_weight > MAX_STANDARD_TX_WEIGHT.try_into().unwrap() {
+    if !no_limit && reveal_weight > bitcoin::Weight::from_wu(MAX_STANDARD_TX_WEIGHT.into()) {
       bail!(
         "reveal transaction weight greater than {MAX_STANDARD_TX_WEIGHT} (MAX_STANDARD_TX_WEIGHT): {reveal_weight}"
       );
@@ -392,7 +401,7 @@ impl Inscribe {
         sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
       }],
       output: vec![output],
-      lock_time: PackedLockTime::ZERO,
+      lock_time: LockTime::ZERO,
       version: 1,
     };
 
@@ -457,7 +466,11 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
     let inscription = inscription("text/plain", "ord");
     let commit_address = change(0);
-    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e".parse().unwrap();
+    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+
     let reveal_address = recipient();
     let taker_address = change(2);
     let taker_amount_sats = Amount::from_sat(8000);
@@ -522,7 +535,10 @@ mod tests {
     let inscription = inscription("text/plain", "ord");
     let commit_address = change(0);
     let some_change_address: Address = change(1);
-    let excess_change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e".parse().unwrap();
+    let excess_change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
     let reveal_address = recipient();
     let taker_address = change(2);
     let taker_amount_sats = Amount::from_sat(5000);
@@ -587,7 +603,10 @@ mod tests {
     let inscription = inscription("text/plain", "ord");
     let commit_address = change(0);
     let some_change_address: Address = change(1);
-    let excess_change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e".parse().unwrap();
+    let excess_change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
     let reveal_address = recipient();
 
     let (commit_tx, reveal_tx, _private_key) = Inscribe::create_inscription_transactions(
@@ -628,7 +647,10 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
     let inscription = inscription("text/plain", "ord");
     let commit_address = change(0);
-    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e".parse().unwrap();
+    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
     let reveal_address = recipient();
     let taker_address = change(2);
 
@@ -662,7 +684,10 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
     let inscription = inscription("text/plain", "ord");
     let commit_address = change(0);
-    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e".parse().unwrap();
+    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
     let reveal_address = recipient();
 
     let error = Inscribe::create_inscription_transactions(
@@ -695,7 +720,10 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
     let inscription = inscription("text/plain", "ord");
     let commit_address = change(0);
-    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e".parse().unwrap();
+    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
     let reveal_address = recipient();
 
     let error = Inscribe::create_inscription_transactions(
