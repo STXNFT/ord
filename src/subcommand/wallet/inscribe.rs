@@ -62,6 +62,9 @@ pub(crate) struct Inscribe {
     help = "Sends excess sats from the commit_tx to <EXCESS_CHANGE_ADDRESS>."
   )]
   pub(crate) excess_change_address: Option<Address<NetworkUnchecked>>,
+
+  #[clap(long, help = "Target postage amount.")]
+  pub(crate) postage_sats_amount: Option<u64>,
 }
 
 impl Inscribe {
@@ -98,6 +101,9 @@ impl Inscribe {
     };
 
     let taker_amount_sats = self.taker_sats_amount.map(Amount::from_sat);
+
+    let target_postage_sats = self.postage_sats_amount.map(Amount::from_sat);
+
     let (unsigned_commit_tx, reveal_tx, recovery_key_pair) =
       Inscribe::create_inscription_transactions(
         self.satpoint,
@@ -113,6 +119,7 @@ impl Inscribe {
         taker_amount_sats,
         taker_address_or_none,
         excess_change_address_or_none,
+        target_postage_sats,
       )?;
 
     utxos.insert(
@@ -183,6 +190,7 @@ impl Inscribe {
     taker_amount_sats: Option<Amount>,
     taker_address: Option<Address>,
     excess_change_address: Option<Address>,
+    target_postage: Option<Amount>,
   ) -> Result<(Transaction, Transaction, TweakedKeyPair)> {
     // validate that if taker_address is set, taker_amount_sats is also set
     if taker_address.is_some() && taker_amount_sats.is_none() {
@@ -204,6 +212,8 @@ impl Inscribe {
         return Err(anyhow!("taker_amount_sats is set to 0"));
       }
     }
+
+    let target_postage_sats = target_postage.unwrap_or(TransactionBuilder::TARGET_POSTAGE);
 
     let satpoint = if let Some(satpoint) = satpoint {
       satpoint
@@ -276,7 +286,7 @@ impl Inscribe {
       commit_tx_address.clone(),
       change,
       commit_fee_rate,
-      reveal_fee + TransactionBuilder::TARGET_POSTAGE,
+      reveal_fee + target_postage_sats,
       taker_amount_sats,
       taker_address,
       excess_change_address,
@@ -448,6 +458,7 @@ mod tests {
       None,
       None,
       None,
+      None,
     )
     .unwrap();
 
@@ -488,6 +499,7 @@ mod tests {
       false,
       Some(taker_amount_sats.clone()),
       Some(taker_address.clone()),
+      None,
       None,
     )
     .unwrap();
@@ -557,6 +569,7 @@ mod tests {
       Some(taker_amount_sats.clone()),
       Some(taker_address.clone()),
       Some(excess_change_address.clone()),
+      None,
     )
     .unwrap();
 
@@ -577,6 +590,66 @@ mod tests {
       reveal_tx.output[0].value,
       20000 - fee.to_sat() - (20000 - commit_tx.output[0].value),
     );
+
+    // Assert commit output [1] is taker address
+    assert_eq!(
+      commit_tx.output[1].script_pubkey,
+      taker_address.clone().script_pubkey()
+    );
+
+    // Assert commit output [1] is taker amount
+    assert_eq!(
+      commit_tx.output[1].value,
+      taker_amount_sats.clone().to_sat()
+    );
+
+    // Assert commit output [2] is change address
+    assert_eq!(
+      commit_tx.output[2].script_pubkey,
+      excess_change_address.clone().script_pubkey(),
+    );
+  }
+
+  #[test]
+  fn with_target_postage() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
+    let inscription = inscription("text/plain", "ord");
+    let commit_address = change(0);
+    let some_change_address: Address = change(1);
+    let excess_change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+    let reveal_address = recipient();
+    let taker_address = change(2);
+    let taker_amount_sats = Amount::from_sat(5000);
+    let target_postage_sats = Amount::from_sat(567);
+
+    let (commit_tx, reveal_tx, _private_key) = Inscribe::create_inscription_transactions(
+      Some(satpoint(1, 0)),
+      inscription,
+      BTreeMap::new(),
+      Network::Bitcoin,
+      utxos.into_iter().collect(),
+      [commit_address.clone(), some_change_address.clone()],
+      reveal_address,
+      FeeRate::try_from(1.0).unwrap(),
+      FeeRate::try_from(1.0).unwrap(),
+      false,
+      Some(taker_amount_sats.clone()),
+      Some(taker_address.clone()),
+      Some(excess_change_address.clone()),
+      Some(target_postage_sats.clone()),
+    )
+    .unwrap();
+
+    tprintln!("commit output 0: {}", commit_tx.output[0].value);
+    tprintln!("commit output 1: {}", commit_tx.output[1].value);
+    tprintln!("commit output 2: {}", commit_tx.output[2].value);
+    tprintln!("reveal output 0: {}", reveal_tx.output[0].value);
+
+    // Assert reveal TX is 10k sats.
+    assert_eq!(reveal_tx.output[0].value, target_postage_sats.to_sat());
 
     // Assert commit output [1] is taker address
     assert_eq!(
@@ -623,6 +696,7 @@ mod tests {
       None,
       None,
       Some(excess_change_address.clone()),
+      None,
     )
     .unwrap();
 
@@ -668,6 +742,7 @@ mod tests {
       None,
       Some(taker_address.clone()),
       None,
+      None,
     )
     .unwrap_err()
     .to_string();
@@ -702,6 +777,7 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       false,
       Some(Amount::from_sat(5000)),
+      None,
       None,
       None,
     )
@@ -740,6 +816,7 @@ mod tests {
       Some(Amount::from_sat(0)),
       Some(change(1)),
       None,
+      None,
     )
     .unwrap_err()
     .to_string();
@@ -765,6 +842,7 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      None,
       None,
       None,
       None,
@@ -803,6 +881,7 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      None,
       None,
       None,
       None,
@@ -850,7 +929,8 @@ mod tests {
       false,
       None,
       None,
-      None
+      None,
+      None,
     )
     .is_ok())
   }
@@ -887,6 +967,7 @@ mod tests {
       FeeRate::try_from(fee_rate).unwrap(),
       FeeRate::try_from(fee_rate).unwrap(),
       false,
+      None,
       None,
       None,
       None,
@@ -955,6 +1036,7 @@ mod tests {
       None,
       None,
       None,
+      None,
     )
     .unwrap();
 
@@ -1007,6 +1089,7 @@ mod tests {
       None,
       None,
       None,
+      None,
     )
     .unwrap_err()
     .to_string();
@@ -1040,6 +1123,7 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       true,
+      None,
       None,
       None,
       None,
