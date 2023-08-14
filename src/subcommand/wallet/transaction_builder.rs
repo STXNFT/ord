@@ -393,28 +393,23 @@ impl TransactionBuilder {
         Target::Value(value) => (value, value),
       };
       let use_provided_change_address =
-        self.excess_change_address.is_some() && value - target > Amount::from_sat(1000);
+        self.excess_change_address.is_some() && (value - target > Amount::from_sat(1000));
 
+      let change_address = if use_provided_change_address {
+        self.excess_change_address.clone().unwrap()
+      } else {
+        self
+          .unused_change_addresses
+          .pop()
+          .expect("not enough change addresses")
+      };
       if excess > max
         && value.checked_sub(target).unwrap()
-          > self
-            .unused_change_addresses
-            .last()
-            .unwrap()
-            .script_pubkey()
-            .dust_value()
+          > change_address.script_pubkey().dust_value()
             + self
               .fee_rate
               .fee(self.estimate_vbytes() + Self::ADDITIONAL_OUTPUT_VBYTES)
       {
-        let change_address = if use_provided_change_address {
-          self.excess_change_address.clone().unwrap()
-        } else {
-          self
-            .unused_change_addresses
-            .pop()
-            .expect("not enough change addresses")
-        };
         self.outputs.last_mut().expect("no outputs found").1 = target;
         if self.taker_amount_sats.clone().is_some() && self.taker_address.clone().is_some() {
           self.outputs.push((
