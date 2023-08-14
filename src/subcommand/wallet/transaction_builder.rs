@@ -387,12 +387,13 @@ impl TransactionBuilder {
       .expect("couldn't find output that contains the index");
 
     let value = total_output_amount - Amount::from_sat(sat_offset);
-
     if let Some(excess) = value.checked_sub(self.fee_rate.fee(self.estimate_vbytes())) {
       let (max, target) = match self.target {
         Target::Postage => (Self::MAX_POSTAGE, Self::TARGET_POSTAGE),
         Target::Value(value) => (value, value),
       };
+      let use_provided_change_address =
+        self.excess_change_address.is_some() && value - target > Amount::from_sat(1000);
 
       if excess > max
         && value.checked_sub(target).unwrap()
@@ -406,7 +407,7 @@ impl TransactionBuilder {
               .fee_rate
               .fee(self.estimate_vbytes() + Self::ADDITIONAL_OUTPUT_VBYTES)
       {
-        let change_address = if self.excess_change_address.is_some() {
+        let change_address = if use_provided_change_address {
           self.excess_change_address.clone().unwrap()
         } else {
           self
