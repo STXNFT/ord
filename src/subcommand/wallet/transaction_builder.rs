@@ -387,33 +387,29 @@ impl TransactionBuilder {
       .expect("couldn't find output that contains the index");
 
     let value = total_output_amount - Amount::from_sat(sat_offset);
-
     if let Some(excess) = value.checked_sub(self.fee_rate.fee(self.estimate_vbytes())) {
       let (max, target) = match self.target {
         Target::Postage => (Self::MAX_POSTAGE, Self::TARGET_POSTAGE),
         Target::Value(value) => (value, value),
       };
+      let use_provided_change_address =
+        self.excess_change_address.is_some() && (value - target > Amount::from_sat(1000));
 
+      let change_address = if use_provided_change_address {
+        self.excess_change_address.clone().unwrap()
+      } else {
+        self
+          .unused_change_addresses
+          .pop()
+          .expect("not enough change addresses")
+      };
       if excess > max
         && value.checked_sub(target).unwrap()
-          > self
-            .unused_change_addresses
-            .last()
-            .unwrap()
-            .script_pubkey()
-            .dust_value()
+          > change_address.script_pubkey().dust_value()
             + self
               .fee_rate
               .fee(self.estimate_vbytes() + Self::ADDITIONAL_OUTPUT_VBYTES)
       {
-        let change_address = if self.excess_change_address.is_some() {
-          self.excess_change_address.clone().unwrap()
-        } else {
-          self
-            .unused_change_addresses
-            .pop()
-            .expect("not enough change addresses")
-        };
         self.outputs.last_mut().expect("no outputs found").1 = target;
         if self.taker_amount_sats.clone().is_some() && self.taker_address.clone().is_some() {
           self.outputs.push((
