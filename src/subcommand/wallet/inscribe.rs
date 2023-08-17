@@ -3,15 +3,16 @@ use {
   crate::wallet::Wallet,
   bitcoin::{
     blockdata::{opcodes, script},
+    key::PrivateKey,
+    key::{TapTweak, TweakedKeyPair, TweakedPublicKey, UntweakedKeyPair},
+    locktime::absolute::LockTime,
     policy::MAX_STANDARD_TX_WEIGHT,
-    schnorr::{TapTweak, TweakedKeyPair, TweakedPublicKey, UntweakedKeyPair},
     secp256k1::{
       self, constants::SCHNORR_SIGNATURE_SIZE, rand, schnorr::Signature, Secp256k1, XOnlyPublicKey,
     },
-    util::key::PrivateKey,
-    util::sighash::{Prevouts, SighashCache},
-    util::taproot::{ControlBlock, LeafVersion, TapLeafHash, TaprootBuilder},
-    PackedLockTime, SchnorrSighashType, Witness,
+    sighash::{Prevouts, SighashCache, TapSighashType},
+    taproot::{ControlBlock, LeafVersion, TapLeafHash, TaprootBuilder},
+    ScriptBuf, Witness,
   },
   bitcoincore_rpc::bitcoincore_rpc_json::{ImportDescriptors, Timestamp},
   bitcoincore_rpc::Client,
@@ -49,7 +50,21 @@ pub(crate) struct Inscribe {
   #[clap(long, help = "Don't sign or broadcast transactions.")]
   pub(crate) dry_run: bool,
   #[clap(long, help = "Send inscription to <DESTINATION>.")]
-  pub(crate) destination: Option<Address>,
+  pub(crate) destination: Option<Address<NetworkUnchecked>>,
+
+  #[clap(long, help = "Sends taker_sats_amount to <TAKER_ADDRESS>.")]
+  pub(crate) taker_address: Option<Address<NetworkUnchecked>>,
+  #[clap(long, help = "Sends taker_address <TAKER_SATS_AMOUNT> sats.")]
+  pub(crate) taker_sats_amount: Option<u64>,
+
+  #[clap(
+    long,
+    help = "Sends excess sats from the commit_tx to <EXCESS_CHANGE_ADDRESS>."
+  )]
+  pub(crate) excess_change_address: Option<Address<NetworkUnchecked>>,
+
+  #[clap(long, help = "Target postage amount.")]
+  pub(crate) postage_sats_amount: Option<u64>,
 }
 
 impl Inscribe {
@@ -63,19 +78,31 @@ impl Inscribe {
 
     let mut utxos = index.get_unspent_outputs(Wallet::load(&options)?)?;
 
-    let inscriptions = index.get_inscriptions(None)?;
+    let inscriptions = index.get_inscriptions(utxos.clone())?;
 
-    let commit_tx_change = [get_change_address(&client)?, get_change_address(&client)?];
+    let commit_tx_change = [
+      get_change_address(&client, &options)?,
+      get_change_address(&client, &options)?,
+    ];
 
     let reveal_tx_destination = match self.destination {
-      Some(address) => {
-        options
-          .chain()
-          .check_address_is_valid_for_network(&address)?;
-        address
-      }
-      None => get_change_address(&client)?,
+      Some(address) => address.require_network(options.chain().network())?,
+      None => get_change_address(&client, &options)?,
     };
+
+    let taker_address_or_none: Option<Address> = match self.taker_address {
+      Some(address) => Some(address.require_network(options.chain().network())?),
+      None => None,
+    };
+
+    let excess_change_address_or_none: Option<Address> = match self.excess_change_address {
+      Some(address) => Some(address.require_network(options.chain().network())?),
+      None => None,
+    };
+
+    let taker_amount_sats = self.taker_sats_amount.map(Amount::from_sat);
+
+    let target_postage_sats = self.postage_sats_amount.map(Amount::from_sat);
 
     let (unsigned_commit_tx, reveal_tx, recovery_key_pair) =
       Inscribe::create_inscription_transactions(
@@ -89,6 +116,10 @@ impl Inscribe {
         self.commit_fee_rate.unwrap_or(self.fee_rate),
         self.fee_rate,
         self.no_limit,
+        taker_amount_sats,
+        taker_address_or_none,
+        excess_change_address_or_none,
+        target_postage_sats,
       )?;
 
     utxos.insert(
@@ -156,7 +187,34 @@ impl Inscribe {
     commit_fee_rate: FeeRate,
     reveal_fee_rate: FeeRate,
     no_limit: bool,
+    taker_amount_sats: Option<Amount>,
+    taker_address: Option<Address>,
+    excess_change_address: Option<Address>,
+    target_postage: Option<Amount>,
   ) -> Result<(Transaction, Transaction, TweakedKeyPair)> {
+    // validate that if taker_address is set, taker_amount_sats is also set
+    if taker_address.is_some() && taker_amount_sats.is_none() {
+      return Err(anyhow!(
+        "taker_address is set but taker_amount_sats is not set"
+      ));
+    }
+
+    // validate that if taker_amount_sats is set, taker_address is also set
+    if taker_amount_sats.is_some() && taker_address.is_none() {
+      return Err(anyhow!(
+        "taker_amount_sats is set but taker_address is not set"
+      ));
+    }
+
+    // validate that if taker_amount_sats is set it is not 0
+    if let Some(taker_amount_sats) = taker_amount_sats {
+      if taker_amount_sats == Amount::ZERO {
+        return Err(anyhow!("taker_amount_sats is set to 0"));
+      }
+    }
+
+    let target_postage_sats = target_postage.unwrap_or(TransactionBuilder::TARGET_POSTAGE);
+
     let satpoint = if let Some(satpoint) = satpoint {
       satpoint
     } else {
@@ -193,8 +251,8 @@ impl Inscribe {
     let (public_key, _parity) = XOnlyPublicKey::from_keypair(&key_pair);
 
     let reveal_script = inscription.append_reveal_script(
-      script::Builder::new()
-        .push_slice(&public_key.serialize())
+      ScriptBuf::builder()
+        .push_slice(public_key.serialize())
         .push_opcode(opcodes::all::OP_CHECKSIG),
     );
 
@@ -228,7 +286,10 @@ impl Inscribe {
       commit_tx_address.clone(),
       change,
       commit_fee_rate,
-      reveal_fee + TransactionBuilder::TARGET_POSTAGE,
+      reveal_fee + target_postage_sats,
+      taker_amount_sats,
+      taker_address,
+      excess_change_address,
     )?;
 
     let (vout, output) = unsigned_commit_tx
@@ -268,12 +329,12 @@ impl Inscribe {
         0,
         &Prevouts::All(&[output]),
         TapLeafHash::from_script(&reveal_script, LeafVersion::TapScript),
-        SchnorrSighashType::Default,
+        TapSighashType::Default,
       )
       .expect("signature hash should compute");
 
     let signature = secp256k1.sign_schnorr(
-      &secp256k1::Message::from_slice(signature_hash.as_inner())
+      &secp256k1::Message::from_slice(signature_hash.as_ref())
         .expect("should be cryptographically secure hash"),
       &key_pair,
     );
@@ -298,7 +359,7 @@ impl Inscribe {
 
     let reveal_weight = reveal_tx.weight();
 
-    if !no_limit && reveal_weight > MAX_STANDARD_TX_WEIGHT.try_into().unwrap() {
+    if !no_limit && reveal_weight > bitcoin::Weight::from_wu(MAX_STANDARD_TX_WEIGHT.into()) {
       bail!(
         "reveal transaction weight greater than {MAX_STANDARD_TX_WEIGHT} (MAX_STANDARD_TX_WEIGHT): {reveal_weight}"
       );
@@ -350,7 +411,7 @@ impl Inscribe {
         sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
       }],
       output: vec![output],
-      lock_time: PackedLockTime::ZERO,
+      lock_time: LockTime::ZERO,
       version: 1,
     };
 
@@ -394,6 +455,10 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      None,
+      None,
+      None,
+      None,
     )
     .unwrap();
 
@@ -405,6 +470,358 @@ mod tests {
       reveal_tx.output[0].value,
       20000 - fee.to_sat() - (20000 - commit_tx.output[0].value),
     );
+  }
+
+  #[test]
+  fn with_taker_fees() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
+    let inscription = inscription("text/plain", "ord");
+    let commit_address = change(0);
+    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+
+    let reveal_address = recipient();
+    let taker_address = change(2);
+    let taker_amount_sats = Amount::from_sat(8000);
+
+    let (commit_tx, reveal_tx, _private_key) = Inscribe::create_inscription_transactions(
+      Some(satpoint(1, 0)),
+      inscription,
+      BTreeMap::new(),
+      Network::Bitcoin,
+      utxos.into_iter().collect(),
+      [commit_address.clone(), change_address.clone()],
+      reveal_address,
+      FeeRate::try_from(1.0).unwrap(),
+      FeeRate::try_from(1.0).unwrap(),
+      false,
+      Some(taker_amount_sats.clone()),
+      Some(taker_address.clone()),
+      None,
+      None,
+    )
+    .unwrap();
+
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    let fee = Amount::from_sat((1.0 * (reveal_tx.vsize() as f64)).ceil() as u64);
+
+    tprintln!("commit output 0: {}", commit_tx.output[0].value);
+
+    tprintln!("commit output 1: {}", commit_tx.output[1].value);
+
+    tprintln!("commit output 2: {}", commit_tx.output[2].value);
+
+    tprintln!("reveal output 0: {}", reveal_tx.output[0].value);
+
+    // Assert reveal TX is 10k sats.
+    assert_eq!(
+      reveal_tx.output[0].value,
+      20000 - fee.to_sat() - (20000 - commit_tx.output[0].value),
+    );
+
+    // Assert commit output [1] is taker address
+    assert_eq!(
+      commit_tx.output[1].script_pubkey,
+      taker_address.clone().script_pubkey()
+    );
+
+    // Assert commit output [1] is taker amount
+    assert_eq!(
+      commit_tx.output[1].value,
+      taker_amount_sats.clone().to_sat()
+    );
+
+    // Assert commit output [2] is change address
+    assert_eq!(
+      commit_tx.output[2].script_pubkey,
+      change_address.clone().script_pubkey(),
+    );
+  }
+
+  #[test]
+  fn with_taker_and_explicit_excess_change_address() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
+    let inscription = inscription("text/plain", "ord");
+    let commit_address = change(0);
+    let some_change_address: Address = change(1);
+    let excess_change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+    let reveal_address = recipient();
+    let taker_address = change(2);
+    let taker_amount_sats = Amount::from_sat(5000);
+
+    let (commit_tx, reveal_tx, _private_key) = Inscribe::create_inscription_transactions(
+      Some(satpoint(1, 0)),
+      inscription,
+      BTreeMap::new(),
+      Network::Bitcoin,
+      utxos.into_iter().collect(),
+      [commit_address.clone(), some_change_address.clone()],
+      reveal_address,
+      FeeRate::try_from(1.0).unwrap(),
+      FeeRate::try_from(1.0).unwrap(),
+      false,
+      Some(taker_amount_sats.clone()),
+      Some(taker_address.clone()),
+      Some(excess_change_address.clone()),
+      None,
+    )
+    .unwrap();
+
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    let fee = Amount::from_sat((1.0 * (reveal_tx.vsize() as f64)).ceil() as u64);
+
+    tprintln!("commit output 0: {}", commit_tx.output[0].value);
+
+    tprintln!("commit output 1: {}", commit_tx.output[1].value);
+
+    tprintln!("commit output 2: {}", commit_tx.output[2].value);
+
+    tprintln!("reveal output 0: {}", reveal_tx.output[0].value);
+
+    // Assert reveal TX is 10k sats.
+    assert_eq!(
+      reveal_tx.output[0].value,
+      20000 - fee.to_sat() - (20000 - commit_tx.output[0].value),
+    );
+
+    // Assert commit output [1] is taker address
+    assert_eq!(
+      commit_tx.output[1].script_pubkey,
+      taker_address.clone().script_pubkey()
+    );
+
+    // Assert commit output [1] is taker amount
+    assert_eq!(
+      commit_tx.output[1].value,
+      taker_amount_sats.clone().to_sat()
+    );
+
+    // Assert commit output [2] is change address
+    assert_eq!(
+      commit_tx.output[2].script_pubkey,
+      excess_change_address.clone().script_pubkey(),
+    );
+  }
+
+  #[test]
+  fn with_target_postage() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
+    let inscription = inscription("text/plain", "ord");
+    let commit_address = change(0);
+    let some_change_address: Address = change(1);
+    let excess_change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+    let reveal_address = recipient();
+    let taker_address = change(2);
+    let taker_amount_sats = Amount::from_sat(5000);
+    let target_postage_sats = Amount::from_sat(567);
+
+    let (commit_tx, reveal_tx, _private_key) = Inscribe::create_inscription_transactions(
+      Some(satpoint(1, 0)),
+      inscription,
+      BTreeMap::new(),
+      Network::Bitcoin,
+      utxos.into_iter().collect(),
+      [commit_address.clone(), some_change_address.clone()],
+      reveal_address,
+      FeeRate::try_from(1.0).unwrap(),
+      FeeRate::try_from(1.0).unwrap(),
+      false,
+      Some(taker_amount_sats.clone()),
+      Some(taker_address.clone()),
+      Some(excess_change_address.clone()),
+      Some(target_postage_sats.clone()),
+    )
+    .unwrap();
+
+    tprintln!("commit output 0: {}", commit_tx.output[0].value);
+    tprintln!("commit output 1: {}", commit_tx.output[1].value);
+    tprintln!("commit output 2: {}", commit_tx.output[2].value);
+    tprintln!("reveal output 0: {}", reveal_tx.output[0].value);
+
+    // Assert reveal TX is 10k sats.
+    assert_eq!(reveal_tx.output[0].value, target_postage_sats.to_sat());
+
+    // Assert commit output [1] is taker address
+    assert_eq!(
+      commit_tx.output[1].script_pubkey,
+      taker_address.clone().script_pubkey()
+    );
+
+    // Assert commit output [1] is taker amount
+    assert_eq!(
+      commit_tx.output[1].value,
+      taker_amount_sats.clone().to_sat()
+    );
+
+    // Assert commit output [2] is change address
+    assert_eq!(
+      commit_tx.output[2].script_pubkey,
+      excess_change_address.clone().script_pubkey(),
+    );
+  }
+
+  #[test]
+  fn with_no_taker_and_explicit_excess_change_address() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
+    let inscription = inscription("text/plain", "ord");
+    let commit_address = change(0);
+    let some_change_address: Address = change(1);
+    let excess_change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+    let reveal_address = recipient();
+
+    let (commit_tx, reveal_tx, _private_key) = Inscribe::create_inscription_transactions(
+      Some(satpoint(1, 0)),
+      inscription,
+      BTreeMap::new(),
+      Network::Bitcoin,
+      utxos.into_iter().collect(),
+      [commit_address.clone(), some_change_address.clone()],
+      reveal_address,
+      FeeRate::try_from(1.0).unwrap(),
+      FeeRate::try_from(1.0).unwrap(),
+      false,
+      None,
+      None,
+      Some(excess_change_address.clone()),
+      None,
+    )
+    .unwrap();
+
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    let fee = Amount::from_sat((1.0 * (reveal_tx.vsize() as f64)).ceil() as u64);
+    // Assert reveal TX is 10k sats.
+    assert_eq!(
+      reveal_tx.output[0].value,
+      20000 - fee.to_sat() - (20000 - commit_tx.output[0].value),
+    );
+
+    // Assert commit output [2] is change address
+    assert_eq!(
+      commit_tx.output[1].script_pubkey,
+      excess_change_address.clone().script_pubkey(),
+    );
+  }
+
+  #[test]
+  fn taker_address_set_but_not_taker_sats_amount() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
+    let inscription = inscription("text/plain", "ord");
+    let commit_address = change(0);
+    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+    let reveal_address = recipient();
+    let taker_address = change(2);
+
+    let error = Inscribe::create_inscription_transactions(
+      Some(satpoint(1, 0)),
+      inscription,
+      BTreeMap::new(),
+      Network::Bitcoin,
+      utxos.into_iter().collect(),
+      [commit_address.clone(), change_address.clone()],
+      reveal_address,
+      FeeRate::try_from(1.0).unwrap(),
+      FeeRate::try_from(1.0).unwrap(),
+      false,
+      None,
+      Some(taker_address.clone()),
+      None,
+      None,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+      error.contains("taker_address is set but taker_amount_sats is not set"),
+      "{}",
+      error
+    );
+  }
+
+  #[test]
+  fn taker_sats_amount_set_but_not_taker_address() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
+    let inscription = inscription("text/plain", "ord");
+    let commit_address = change(0);
+    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+    let reveal_address = recipient();
+
+    let error = Inscribe::create_inscription_transactions(
+      Some(satpoint(1, 0)),
+      inscription,
+      BTreeMap::new(),
+      Network::Bitcoin,
+      utxos.into_iter().collect(),
+      [commit_address.clone(), change_address.clone()],
+      reveal_address,
+      FeeRate::try_from(1.0).unwrap(),
+      FeeRate::try_from(1.0).unwrap(),
+      false,
+      Some(Amount::from_sat(5000)),
+      None,
+      None,
+      None,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+      error.contains("taker_amount_sats is set but taker_address is not set"),
+      "{}",
+      error
+    );
+  }
+
+  #[test]
+  fn taker_amount_sats_not_0() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(20000))];
+    let inscription = inscription("text/plain", "ord");
+    let commit_address = change(0);
+    let change_address: Address = "2N83imGV3gPwBzKJQvWJ7cRUY2SpUyU6A5e"
+      .parse::<Address<NetworkUnchecked>>()
+      .unwrap()
+      .assume_checked();
+    let reveal_address = recipient();
+
+    let error = Inscribe::create_inscription_transactions(
+      Some(satpoint(1, 0)),
+      inscription,
+      BTreeMap::new(),
+      Network::Bitcoin,
+      utxos.into_iter().collect(),
+      [commit_address.clone(), change_address.clone()],
+      reveal_address,
+      FeeRate::try_from(1.0).unwrap(),
+      FeeRate::try_from(1.0).unwrap(),
+      false,
+      Some(Amount::from_sat(0)),
+      Some(change(1)),
+      None,
+      None,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("taker_amount_sats is set to 0"), "{}", error);
   }
 
   #[test]
@@ -425,6 +842,10 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      None,
+      None,
+      None,
+      None,
     )
     .unwrap();
 
@@ -460,6 +881,10 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      None,
+      None,
+      None,
+      None,
     )
     .unwrap_err()
     .to_string();
@@ -502,6 +927,10 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      None,
+      None,
+      None,
+      None,
     )
     .is_ok())
   }
@@ -538,6 +967,10 @@ mod tests {
       FeeRate::try_from(fee_rate).unwrap(),
       FeeRate::try_from(fee_rate).unwrap(),
       false,
+      None,
+      None,
+      None,
+      None,
     )
     .unwrap();
 
@@ -600,6 +1033,10 @@ mod tests {
       FeeRate::try_from(commit_fee_rate).unwrap(),
       FeeRate::try_from(fee_rate).unwrap(),
       false,
+      None,
+      None,
+      None,
+      None,
     )
     .unwrap();
 
@@ -649,9 +1086,15 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       false,
+      None,
+      None,
+      None,
+      None,
     )
     .unwrap_err()
     .to_string();
+
+    tprintln!("{}", error);
 
     assert!(
       error.contains(&format!("reveal transaction weight greater than {MAX_STANDARD_TX_WEIGHT} (MAX_STANDARD_TX_WEIGHT): 402799")),
@@ -680,6 +1123,10 @@ mod tests {
       FeeRate::try_from(1.0).unwrap(),
       FeeRate::try_from(1.0).unwrap(),
       true,
+      None,
+      None,
+      None,
+      None,
     )
     .unwrap();
 

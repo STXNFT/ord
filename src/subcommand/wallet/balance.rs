@@ -9,14 +9,16 @@ pub(crate) fn run(options: Options) -> Result {
   let index = Index::open(&options)?;
   index.update()?;
 
+  let unspent_outputs = index.get_unspent_outputs(Wallet::load(&options)?)?;
+
   let inscription_outputs = index
-    .get_inscriptions(None)?
+    .get_inscriptions(unspent_outputs.clone())?
     .keys()
     .map(|satpoint| satpoint.outpoint)
     .collect::<BTreeSet<OutPoint>>();
 
   let mut balance = 0;
-  for (outpoint, amount) in index.get_unspent_outputs(Wallet::load(&options)?)? {
+  for (outpoint, amount) in unspent_outputs {
     if !inscription_outputs.contains(&outpoint) {
       balance += amount.to_sat()
     }
