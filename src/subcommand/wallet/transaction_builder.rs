@@ -63,9 +63,10 @@ pub enum Error {
 }
 
 #[derive(Debug, PartialEq)]
-enum Target {
+pub enum Target {
   Value(Amount),
   Postage,
+  ExactPostage(Amount),
 }
 
 impl fmt::Display for Error {
@@ -97,7 +98,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct TransactionBuilder {
   amounts: BTreeMap<OutPoint, Amount>,
   change_addresses: BTreeSet<Address>,
@@ -120,81 +121,11 @@ type Result<T> = std::result::Result<T, Error>;
 impl TransactionBuilder {
   const ADDITIONAL_INPUT_VBYTES: usize = 58;
   const ADDITIONAL_OUTPUT_VBYTES: usize = 43;
-  const MAX_POSTAGE: Amount = Amount::from_sat(2 * 10_000);
   const SCHNORR_SIGNATURE_SIZE: usize = 64;
   pub(crate) const TARGET_POSTAGE: Amount = Amount::from_sat(10_000);
+  pub(crate) const MAX_POSTAGE: Amount = Amount::from_sat(2 * 10_000);
 
-  pub fn build_transaction_with_postage(
-    outgoing: SatPoint,
-    inscriptions: BTreeMap<SatPoint, InscriptionId>,
-    amounts: BTreeMap<OutPoint, Amount>,
-    recipient: Address,
-    change: [Address; 2],
-    fee_rate: FeeRate,
-  ) -> Result<Transaction> {
-    Self::new(
-      outgoing,
-      inscriptions,
-      amounts,
-      recipient,
-      change,
-      fee_rate,
-      Target::Postage,
-      None,
-      None,
-      None,
-    )?
-    .build_transaction()
-  }
-
-  pub fn build_transaction_with_value(
-    outgoing: SatPoint,
-    inscriptions: BTreeMap<SatPoint, InscriptionId>,
-    amounts: BTreeMap<OutPoint, Amount>,
-    recipient: Address,
-    change: [Address; 2],
-    fee_rate: FeeRate,
-    output_value: Amount,
-    taker_amount_sats: Option<Amount>,
-    taker_address: Option<Address>,
-    excess_change_address: Option<Address>,
-  ) -> Result<Transaction> {
-    let dust_value = recipient.script_pubkey().dust_value();
-
-    if output_value < dust_value {
-      return Err(Error::Dust {
-        output_value,
-        dust_value,
-      });
-    }
-
-    Self::new(
-      outgoing,
-      inscriptions,
-      amounts,
-      recipient,
-      change,
-      fee_rate,
-      Target::Value(output_value),
-      taker_amount_sats,
-      taker_address,
-      excess_change_address,
-    )?
-    .build_transaction()
-  }
-
-  fn build_transaction(self) -> Result<Transaction> {
-    self
-      .select_outgoing()?
-      .align_outgoing()
-      .pad_alignment_output()?
-      .add_value()?
-      .strip_value()
-      .deduct_fee()
-      .build()
-  }
-
-  fn new(
+  pub(crate) fn new(
     outgoing: SatPoint,
     inscriptions: BTreeMap<SatPoint, InscriptionId>,
     amounts: BTreeMap<OutPoint, Amount>,
@@ -205,16 +136,8 @@ impl TransactionBuilder {
     taker_amount_sats: Option<Amount>,
     taker_address: Option<Address>,
     excess_change_address: Option<Address>,
-  ) -> Result<Self> {
-    if change.contains(&recipient) {
-      return Err(Error::DuplicateAddress(recipient));
-    }
-
-    if change[0] == change[1] {
-      return Err(Error::DuplicateAddress(change[0].clone()));
-    }
-
-    Ok(Self {
+  ) -> Self {
+    Self {
       utxos: amounts.keys().cloned().collect(),
       amounts,
       change_addresses: change.iter().cloned().collect(),
@@ -229,7 +152,41 @@ impl TransactionBuilder {
       taker_amount_sats,
       taker_address,
       excess_change_address,
-    })
+    }
+  }
+  pub(crate) fn build_transaction(self) -> Result<Transaction> {
+    if self.change_addresses.len() < 2 {
+      return Err(Error::DuplicateAddress(
+        self.change_addresses.first().unwrap().clone(),
+      ));
+    }
+
+    if self.change_addresses.contains(&self.recipient) {
+      return Err(Error::DuplicateAddress(self.recipient));
+    }
+
+    match self.target {
+      Target::Value(output_value) | Target::ExactPostage(output_value) => {
+        let dust_value = self.recipient.script_pubkey().dust_value();
+
+        if output_value < dust_value {
+          return Err(Error::Dust {
+            output_value,
+            dust_value,
+          });
+        }
+      }
+      _ => (),
+    }
+
+    self
+      .select_outgoing()?
+      .align_outgoing()
+      .pad_alignment_output()?
+      .add_value()?
+      .strip_value()
+      .deduct_fee()
+      .build()
   }
 
   fn select_outgoing(mut self) -> Result<Self> {
@@ -333,7 +290,7 @@ impl TransactionBuilder {
 
     let min_value = match self.target {
       Target::Postage => self.outputs.last().unwrap().0.script_pubkey().dust_value(),
-      Target::Value(value) => value,
+      Target::Value(value) | Target::ExactPostage(value) => value,
     };
 
     let total = min_value
@@ -389,6 +346,7 @@ impl TransactionBuilder {
     let value = total_output_amount - Amount::from_sat(sat_offset);
     if let Some(excess) = value.checked_sub(self.fee_rate.fee(self.estimate_vbytes())) {
       let (max, target) = match self.target {
+        Target::ExactPostage(postage) => (postage, postage),
         Target::Postage => (Self::MAX_POSTAGE, Self::TARGET_POSTAGE),
         Target::Value(value) => (value, value),
       };
@@ -493,7 +451,7 @@ impl TransactionBuilder {
           previous_output: OutPoint::null(),
           script_sig: ScriptBuf::new(),
           sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-          witness: Witness::from_slice(&[&[0; TransactionBuilder::SCHNORR_SIGNATURE_SIZE]]),
+          witness: Witness::from_slice(&[&[0; Self::SCHNORR_SIGNATURE_SIZE]]),
         })
         .collect(),
       output: outputs
@@ -617,6 +575,12 @@ impl TransactionBuilder {
           Target::Postage => {
             assert!(
               Amount::from_sat(output.value) <= Self::MAX_POSTAGE + slop,
+              "invariant: excess postage is stripped"
+            );
+          }
+          Target::ExactPostage(postage) => {
+            assert!(
+              Amount::from_sat(output.value) <= postage + slop,
               "invariant: excess postage is stripped"
             );
           }
@@ -790,7 +754,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap();
 
@@ -856,14 +819,19 @@ mod tests {
   fn transactions_are_rbf() {
     let utxos = vec![(outpoint(1), Amount::from_sat(5_000))];
 
-    assert!(TransactionBuilder::build_transaction_with_postage(
+    assert!(TransactionBuilder::new(
       satpoint(1, 0),
       BTreeMap::new(),
       utxos.into_iter().collect(),
       recipient(),
       [change(0), change(1)],
       FeeRate::try_from(1.0).unwrap(),
+      Target::Postage,
+      None,
+      None,
+      None,
     )
+    .build_transaction()
     .unwrap()
     .is_explicitly_rbf())
   }
@@ -873,14 +841,19 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(5_000))];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -907,7 +880,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap()
     .align_outgoing()
@@ -923,14 +895,19 @@ mod tests {
     ];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 4_950),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -945,14 +922,19 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(5_000))];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 4_950),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Err(Error::NotEnoughCardinalUtxos),
     )
   }
@@ -965,14 +947,19 @@ mod tests {
     ];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 4_950),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Err(Error::NotEnoughCardinalUtxos),
     )
   }
@@ -985,14 +972,19 @@ mod tests {
     ];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 4_950),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1023,7 +1015,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .build()
     .unwrap();
   }
@@ -1045,7 +1036,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .build()
     .unwrap();
   }
@@ -1067,7 +1057,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .build()
     .unwrap();
   }
@@ -1089,7 +1078,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap();
 
@@ -1118,7 +1106,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap();
 
@@ -1132,14 +1119,19 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(1_000_000))];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1169,7 +1161,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap()
     .build()
@@ -1181,14 +1172,19 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(10_000))];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 3_333),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1206,14 +1202,19 @@ mod tests {
     ];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 1),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1242,7 +1243,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap()
     .align_outgoing()
@@ -1273,7 +1273,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap()
     .align_outgoing()
@@ -1302,7 +1301,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap()
     .strip_value()
@@ -1328,7 +1326,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap()
     .strip_value()
@@ -1408,14 +1405,19 @@ mod tests {
     ];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::from([(satpoint(2, 10 * COIN_VALUE), inscription_id(1))]),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Err(Error::NotEnoughCardinalUtxos)
     )
   }
@@ -1425,14 +1427,19 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(1_000))];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::from([(satpoint(1, 500), inscription_id(1))]),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Err(Error::UtxoContainsAdditionalInscription {
         outgoing_satpoint: satpoint(1, 0),
         inscribed_satpoint: satpoint(1, 500),
@@ -1447,14 +1454,19 @@ mod tests {
 
     let fee_rate = FeeRate::try_from(17.3).unwrap();
 
-    let transaction = TransactionBuilder::build_transaction_with_postage(
+    let transaction = TransactionBuilder::new(
       satpoint(1, 0),
       BTreeMap::from([(satpoint(1, 0), inscription_id(1))]),
       utxos.into_iter().collect(),
       recipient(),
       [change(0), change(1)],
       fee_rate,
+      Target::Postage,
+      None,
+      None,
+      None,
     )
+    .build_transaction()
     .unwrap();
 
     let fee =
@@ -1476,18 +1488,19 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(5_000))];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(1000),
+        Target::Value(Amount::from_sat(1000)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1505,18 +1518,19 @@ mod tests {
     ];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(1500),
+        Target::Value(Amount::from_sat(1500)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1531,18 +1545,19 @@ mod tests {
     let utxos = vec![(outpoint(1), Amount::from_sat(1_000))];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::from([(satpoint(1, 500), inscription_id(1))]),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(1),
+        Target::Value(Amount::from_sat(1)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Err(Error::Dust {
         output_value: Amount::from_sat(1),
         dust_value: Amount::from_sat(294)
@@ -1558,18 +1573,19 @@ mod tests {
     ];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(1000),
+        Target::Value(Amount::from_sat(1000)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Err(Error::NotEnoughCardinalUtxos),
     )
   }
@@ -1582,18 +1598,19 @@ mod tests {
     ];
 
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         utxos.into_iter().collect(),
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(4.0).unwrap(),
-        Amount::from_sat(1000),
+        Target::Value(Amount::from_sat(1000)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Err(Error::NotEnoughCardinalUtxos),
     )
   }
@@ -1623,7 +1640,7 @@ mod tests {
   #[test]
   fn do_not_strip_excess_value_if_it_would_create_dust() {
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         vec![(outpoint(1), Amount::from_sat(1_000))]
@@ -1632,11 +1649,12 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-        Amount::from_sat(707),
+        Target::Value(Amount::from_sat(707)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1649,7 +1667,7 @@ mod tests {
   #[test]
   fn possible_to_create_output_of_exactly_max_postage() {
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         vec![(outpoint(1), Amount::from_sat(20_099))]
@@ -1658,7 +1676,12 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(1.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1671,7 +1694,7 @@ mod tests {
   #[test]
   fn do_not_strip_excess_value_if_additional_output_cannot_pay_fee() {
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         vec![(outpoint(1), Amount::from_sat(1_500))]
@@ -1680,11 +1703,12 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(5.0).unwrap(),
-        Amount::from_sat(1000),
+        Target::Value(Amount::from_sat(1000)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1697,7 +1721,7 @@ mod tests {
   #[test]
   fn correct_error_is_returned_when_fee_cannot_be_paid() {
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         vec![(outpoint(1), Amount::from_sat(1_500))]
@@ -1706,11 +1730,12 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(6.0).unwrap(),
-        Amount::from_sat(1000),
+        Target::Value(Amount::from_sat(1000)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Err(Error::NotEnoughCardinalUtxos)
     );
   }
@@ -1718,7 +1743,7 @@ mod tests {
   #[test]
   fn recipient_address_must_be_unique() {
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         vec![(outpoint(1), Amount::from_sat(1000))]
@@ -1727,11 +1752,12 @@ mod tests {
         recipient(),
         [recipient(), change(1)],
         FeeRate::try_from(0.0).unwrap(),
-        Amount::from_sat(1000),
+        Target::Value(Amount::from_sat(1000)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Err(Error::DuplicateAddress(recipient()))
     );
   }
@@ -1739,7 +1765,7 @@ mod tests {
   #[test]
   fn change_addresses_must_be_unique() {
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         vec![(outpoint(1), Amount::from_sat(1000))]
@@ -1748,11 +1774,12 @@ mod tests {
         recipient(),
         [change(0), change(0)],
         FeeRate::try_from(0.0).unwrap(),
-        Amount::from_sat(1000),
+        Target::Value(Amount::from_sat(1000)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Err(Error::DuplicateAddress(change(0)))
     );
   }
@@ -1760,7 +1787,7 @@ mod tests {
   #[test]
   fn output_over_value_because_fees_prevent_excess_value_stripping() {
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_value(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         vec![(outpoint(1), Amount::from_sat(2000))]
@@ -1769,11 +1796,12 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(2.0).unwrap(),
-        Amount::from_sat(1500),
+        Target::Value(Amount::from_sat(1500)),
         None,
         None,
         None
-      ),
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1786,7 +1814,7 @@ mod tests {
   #[test]
   fn output_over_max_postage_because_fees_prevent_excess_value_stripping() {
     pretty_assert_eq!(
-      TransactionBuilder::build_transaction_with_postage(
+      TransactionBuilder::new(
         satpoint(1, 0),
         BTreeMap::new(),
         vec![(outpoint(1), Amount::from_sat(45000))]
@@ -1795,7 +1823,12 @@ mod tests {
         recipient(),
         [change(0), change(1)],
         FeeRate::try_from(250.0).unwrap(),
-      ),
+        Target::Postage,
+        None,
+        None,
+        None,
+      )
+      .build_transaction(),
       Ok(Transaction {
         version: 1,
         lock_time: LockTime::ZERO,
@@ -1828,7 +1861,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap()
     .add_value()
@@ -1876,7 +1908,6 @@ mod tests {
       None,
       None,
     )
-    .unwrap()
     .select_outgoing()
     .unwrap()
     .align_outgoing()
@@ -1930,8 +1961,7 @@ mod tests {
       None,
       None,
       None,
-    )
-    .unwrap();
+    );
 
     assert_eq!(
       tx_builder
@@ -1969,5 +1999,43 @@ mod tests {
       false,
       Amount::from_sat(20_000),
     );
+  }
+
+  #[test]
+  fn build_transaction_with_custom_postage() {
+    let utxos = vec![(outpoint(1), Amount::from_sat(1_000_000))];
+
+    let fee_rate = FeeRate::try_from(17.3).unwrap();
+
+    let transaction = TransactionBuilder::new(
+      satpoint(1, 0),
+      BTreeMap::from([(satpoint(1, 0), inscription_id(1))]),
+      utxos.into_iter().collect(),
+      recipient(),
+      [change(0), change(1)],
+      fee_rate,
+      Target::ExactPostage(Amount::from_sat(66_000)),
+      None,
+      None,
+      None,
+    )
+    .build_transaction()
+    .unwrap();
+
+    let fee =
+      fee_rate.fee(transaction.vsize() + TransactionBuilder::SCHNORR_SIGNATURE_SIZE / 4 + 1);
+
+    pretty_assert_eq!(
+      transaction,
+      Transaction {
+        version: 1,
+        lock_time: LockTime::ZERO,
+        input: vec![tx_in(outpoint(1))],
+        output: vec![
+          tx_out(66_000, recipient()),
+          tx_out(1_000_000 - 66_000 - fee.to_sat(), change(1))
+        ],
+      }
+    )
   }
 }
