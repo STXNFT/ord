@@ -173,17 +173,10 @@ impl Server {
 
       let config = options.load_config()?;
       let acme_domains = self.acme_domains()?;
-      let csp = config
-        .content_security_policy
-        .clone()
-        .unwrap_or("default-src 'self'".to_string());
       let page_config = Arc::new(PageConfig {
         chain: options.chain(),
         domain: acme_domains.first().cloned(),
       });
-
-      let csp_header = HeaderValue::from_str(csp.as_str())
-        .unwrap_or(HeaderValue::from_static("default-src 'self'"));
 
       let router = Router::new()
         .route("/", get(Self::home))
@@ -223,7 +216,7 @@ impl Server {
         .layer(Extension(block_index_state))
         .layer(SetResponseHeaderLayer::if_not_present(
           header::CONTENT_SECURITY_POLICY,
-          csp_header,
+          HeaderValue::from_static("default-src 'self'"),
         ))
         .layer(SetResponseHeaderLayer::overriding(
           header::STRICT_TRANSPORT_SECURITY,
@@ -860,14 +853,17 @@ impl Server {
       .get_inscription_by_id_including_mempool(inscription_id)?
       .ok_or_not_found(|| format!("inscription {inscription_id}"))?;
 
-    Ok(
-      Self::content_response(inscription)
-        .ok_or_not_found(|| format!("inscription {inscription_id} content"))?
-        .into_response(),
-    )
+    let response = Self::content_response(inscription, config.content_security_policy.clone())
+      .ok_or_not_found(|| format!("inscription {inscription_id} content"))?
+      .into_response();
+
+    Ok(response)
   }
 
-  fn content_response(inscription: Inscription) -> Option<(HeaderMap, Vec<u8>)> {
+  fn content_response(
+    inscription: Inscription,
+    additional_csp: Option<String>,
+  ) -> Option<(HeaderMap, Vec<u8>)> {
     let mut headers = HeaderMap::new();
 
     headers.insert(
@@ -885,6 +881,12 @@ impl Server {
       header::CONTENT_SECURITY_POLICY,
       HeaderValue::from_static("default-src *:*/content/ *:*/blockheight *:*/blockhash *:*/blockhash/ *:*/blocktime 'unsafe-eval' 'unsafe-inline' data: blob:"),
     );
+
+    if additional_csp.clone().is_some() {
+      let csp = additional_csp.clone().unwrap();
+      let csp_header = HeaderValue::from_str(csp.as_str()).unwrap_or(HeaderValue::from_static(""));
+      headers.append(header::CONTENT_SECURITY_POLICY, csp_header);
+    }
 
     let body = inscription.into_body();
     let cache_control = match body {
@@ -915,7 +917,7 @@ impl Server {
     match inscription.media() {
       Media::Audio => Ok(PreviewAudioHtml { inscription_id }.into_response()),
       Media::Iframe => Ok(
-        Self::content_response(inscription)
+        Self::content_response(inscription, None)
           .ok_or_not_found(|| format!("inscription {inscription_id} content"))?
           .into_response(),
       ),
@@ -2294,20 +2296,20 @@ mod tests {
   #[test]
   fn content_response_no_content() {
     assert_eq!(
-      Server::content_response(Inscription::new(
-        Some("text/plain".as_bytes().to_vec()),
+      Server::content_response(
+        Inscription::new(Some("text/plain".as_bytes().to_vec()), None),
         None
-      )),
+      ),
       None
     );
   }
 
   #[test]
   fn content_response_with_content() {
-    let (headers, body) = Server::content_response(Inscription::new(
-      Some("text/plain".as_bytes().to_vec()),
-      Some(vec![1, 2, 3]),
-    ))
+    let (headers, body) = Server::content_response(
+      Inscription::new(Some("text/plain".as_bytes().to_vec()), Some(vec![1, 2, 3])),
+      None,
+    )
     .unwrap();
 
     assert_eq!(headers["content-type"], "text/plain");
@@ -2317,7 +2319,7 @@ mod tests {
   #[test]
   fn content_response_no_content_type() {
     let (headers, body) =
-      Server::content_response(Inscription::new(None, Some(Vec::new()))).unwrap();
+      Server::content_response(Inscription::new(None, Some(Vec::new())), None).unwrap();
 
     assert_eq!(headers["content-type"], "application/octet-stream");
     assert!(body.is_empty());
@@ -2325,10 +2327,10 @@ mod tests {
 
   #[test]
   fn content_response_bad_content_type() {
-    let (headers, body) = Server::content_response(Inscription::new(
-      Some("\n".as_bytes().to_vec()),
-      Some(Vec::new()),
-    ))
+    let (headers, body) = Server::content_response(
+      Inscription::new(Some("\n".as_bytes().to_vec()), Some(Vec::new())),
+      None,
+    )
     .unwrap();
 
     assert_eq!(headers["content-type"], "application/octet-stream");
