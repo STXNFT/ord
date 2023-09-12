@@ -134,6 +134,8 @@ pub(crate) struct Server {
   https: bool,
   #[clap(long, help = "Redirect HTTP traffic to HTTPS.")]
   redirect_http_to_https: bool,
+  #[clap(long, help = "Custom CSP.")]
+  csp_override: Option<String>,
 }
 
 impl Server {
@@ -173,11 +175,14 @@ impl Server {
 
       let config = options.load_config()?;
       let acme_domains = self.acme_domains()?;
-
+      let csp = self.csp_override()?;
       let page_config = Arc::new(PageConfig {
         chain: options.chain(),
         domain: acme_domains.first().cloned(),
       });
+
+      let csp_header = HeaderValue::from_str(csp.as_str())
+        .unwrap_or(HeaderValue::from_static("default-src 'self'"));
 
       let router = Router::new()
         .route("/", get(Self::home))
@@ -217,7 +222,7 @@ impl Server {
         .layer(Extension(block_index_state))
         .layer(SetResponseHeaderLayer::if_not_present(
           header::CONTENT_SECURITY_POLICY,
-          HeaderValue::from_static("default-src 'self'"),
+          csp_header,
         ))
         .layer(SetResponseHeaderLayer::overriding(
           header::STRICT_TRANSPORT_SECURITY,
@@ -345,6 +350,14 @@ impl Server {
       Ok(vec![System::new()
         .host_name()
         .ok_or(anyhow!("no hostname found"))?])
+    }
+  }
+
+  fn csp_override(&self) -> Result<String> {
+    if !self.csp_override.is_none() {
+      Ok(self.csp_override.clone().unwrap())
+    } else {
+      Ok("default-src 'self'".to_string())
     }
   }
 
