@@ -1,6 +1,6 @@
 use {
   super::*,
-  crate::wallet::Wallet,
+  crate::{subcommand::wallet::transaction_builder::Target, wallet::Wallet},
   bitcoin::{
     blockdata::{opcodes, script},
     key::PrivateKey,
@@ -63,8 +63,11 @@ pub(crate) struct Inscribe {
   )]
   pub(crate) excess_change_address: Option<Address<NetworkUnchecked>>,
 
-  #[clap(long, help = "Target postage amount.")]
-  pub(crate) postage_sats_amount: Option<u64>,
+  #[clap(
+    long,
+    help = "Amount of postage to include in the inscription. Default `10000sat`"
+  )]
+  pub(crate) postage: Option<Amount>,
 }
 
 impl Inscribe {
@@ -102,8 +105,6 @@ impl Inscribe {
 
     let taker_amount_sats = self.taker_sats_amount.map(Amount::from_sat);
 
-    let target_postage_sats = self.postage_sats_amount.map(Amount::from_sat);
-
     let (unsigned_commit_tx, reveal_tx, recovery_key_pair) =
       Inscribe::create_inscription_transactions(
         self.satpoint,
@@ -119,7 +120,10 @@ impl Inscribe {
         taker_amount_sats,
         taker_address_or_none,
         excess_change_address_or_none,
-        target_postage_sats,
+        match self.postage {
+          Some(postage) => postage,
+          _ => TransactionBuilder::TARGET_POSTAGE,
+        },
       )?;
 
     utxos.insert(
@@ -190,7 +194,7 @@ impl Inscribe {
     taker_amount_sats: Option<Amount>,
     taker_address: Option<Address>,
     excess_change_address: Option<Address>,
-    target_postage: Option<Amount>,
+    postage: Amount,
   ) -> Result<(Transaction, Transaction, TweakedKeyPair)> {
     // validate that if taker_address is set, taker_amount_sats is also set
     if taker_address.is_some() && taker_amount_sats.is_none() {
@@ -212,8 +216,6 @@ impl Inscribe {
         return Err(anyhow!("taker_amount_sats is set to 0"));
       }
     }
-
-    let target_postage_sats = target_postage.unwrap_or(TransactionBuilder::TARGET_POSTAGE);
 
     let satpoint = if let Some(satpoint) = satpoint {
       satpoint
@@ -279,18 +281,19 @@ impl Inscribe {
       &reveal_script,
     );
 
-    let unsigned_commit_tx = TransactionBuilder::build_transaction_with_value(
+    let unsigned_commit_tx = TransactionBuilder::new(
       satpoint,
       inscriptions,
       utxos,
       commit_tx_address.clone(),
       change,
       commit_fee_rate,
-      reveal_fee + target_postage_sats,
+      Target::Value(reveal_fee + postage),
       taker_amount_sats,
       taker_address,
       excess_change_address,
-    )?;
+    )
+    .build_transaction()?;
 
     let (vout, output) = unsigned_commit_tx
       .output
@@ -458,7 +461,7 @@ mod tests {
       None,
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap();
 
@@ -500,7 +503,7 @@ mod tests {
       Some(taker_amount_sats.clone()),
       Some(taker_address.clone()),
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap();
 
@@ -569,7 +572,7 @@ mod tests {
       Some(taker_amount_sats.clone()),
       Some(taker_address.clone()),
       Some(excess_change_address.clone()),
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap();
 
@@ -639,7 +642,7 @@ mod tests {
       Some(taker_amount_sats.clone()),
       Some(taker_address.clone()),
       Some(excess_change_address.clone()),
-      Some(target_postage_sats.clone()),
+      target_postage_sats.clone(),
     )
     .unwrap();
 
@@ -696,7 +699,7 @@ mod tests {
       None,
       None,
       Some(excess_change_address.clone()),
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap();
 
@@ -742,7 +745,7 @@ mod tests {
       None,
       Some(taker_address.clone()),
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap_err()
     .to_string();
@@ -779,7 +782,7 @@ mod tests {
       Some(Amount::from_sat(5000)),
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap_err()
     .to_string();
@@ -816,7 +819,7 @@ mod tests {
       Some(Amount::from_sat(0)),
       Some(change(1)),
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap_err()
     .to_string();
@@ -845,7 +848,7 @@ mod tests {
       None,
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap();
 
@@ -884,7 +887,7 @@ mod tests {
       None,
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap_err()
     .to_string();
@@ -930,7 +933,7 @@ mod tests {
       None,
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .is_ok())
   }
@@ -970,7 +973,7 @@ mod tests {
       None,
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap();
 
@@ -1036,7 +1039,7 @@ mod tests {
       None,
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap();
 
@@ -1089,12 +1092,10 @@ mod tests {
       None,
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap_err()
     .to_string();
-
-    tprintln!("{}", error);
 
     assert!(
       error.contains(&format!("reveal transaction weight greater than {MAX_STANDARD_TX_WEIGHT} (MAX_STANDARD_TX_WEIGHT): 402799")),
@@ -1126,7 +1127,7 @@ mod tests {
       None,
       None,
       None,
-      None,
+      TransactionBuilder::TARGET_POSTAGE,
     )
     .unwrap();
 

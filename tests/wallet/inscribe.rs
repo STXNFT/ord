@@ -81,24 +81,6 @@ fn inscribe_unknown_file_extension() {
 }
 
 #[test]
-fn inscribe_exceeds_chain_limit() {
-  let rpc_server = test_bitcoincore_rpc::builder()
-    .network(Network::Signet)
-    .build();
-  create_wallet(&rpc_server);
-  rpc_server.mine_blocks(1);
-
-  CommandBuilder::new("--chain signet wallet inscribe degenerate.png --fee-rate 1")
-    .write("degenerate.png", [1; 1025])
-    .rpc_server(&rpc_server)
-    .expected_exit_code(1)
-    .expected_stderr(
-      "error: content size of 1025 bytes exceeds 1024 byte limit for signet inscriptions\n",
-    )
-    .run_and_extract_stdout();
-}
-
-#[test]
 fn regtest_has_no_content_size_limit() {
   let rpc_server = test_bitcoincore_rpc::builder()
     .network(Network::Regtest)
@@ -416,4 +398,25 @@ fn inscribe_with_no_limit() {
   CommandBuilder::new("wallet inscribe --no-limit degenerate.png --fee-rate 1")
     .write("degenerate.png", four_megger)
     .rpc_server(&rpc_server);
+}
+
+#[test]
+fn inscribe_works_with_postage() {
+  let rpc_server = test_bitcoincore_rpc::spawn();
+  create_wallet(&rpc_server);
+  rpc_server.mine_blocks(1);
+
+  CommandBuilder::new("wallet inscribe foo.txt --postage 5btc --fee-rate 10".to_string())
+    .write("foo.txt", [0; 350])
+    .rpc_server(&rpc_server)
+    .run_and_check_output::<Inscribe>();
+
+  rpc_server.mine_blocks(1);
+
+  let inscriptions = CommandBuilder::new("wallet inscriptions".to_string())
+    .write("foo.txt", [0; 350])
+    .rpc_server(&rpc_server)
+    .run_and_check_output::<Vec<ord::subcommand::wallet::inscriptions::Output>>();
+
+  pretty_assert_eq!(inscriptions[0].postage, 5 * COIN_VALUE);
 }

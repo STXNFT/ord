@@ -90,7 +90,7 @@ impl Preview {
             taker_address: None,
             taker_sats_amount: None,
             excess_change_address: None,
-            postage_sats_amount: None,
+            postage: Some(TransactionBuilder::TARGET_POSTAGE),
           },
         )),
       }
