@@ -918,7 +918,7 @@ impl Server {
     match inscription.media() {
       Media::Audio => Ok(PreviewAudioHtml { inscription_id }.into_response()),
       Media::Iframe => Ok(
-        Self::content_response(inscription, None)
+        Self::content_response(inscription, config.content_security_policy.clone())
           .ok_or_not_found(|| format!("inscription {inscription_id} content"))?
           .into_response(),
       ),
