@@ -874,15 +874,16 @@ impl Server {
         .unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
 
+    headers.insert(
+      header::CONTENT_SECURITY_POLICY,
+      HeaderValue::from_static("default-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:"),
+    );
+
     if additional_csp.clone().is_some() {
       let csp = additional_csp.clone().unwrap();
       let csp_header = HeaderValue::from_str(csp.as_str()).unwrap_or(HeaderValue::from_static(""));
       headers.append(header::CONTENT_SECURITY_POLICY, csp_header);
     } else {
-      headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:"),
-      );
       headers.append(
       header::CONTENT_SECURITY_POLICY,
       HeaderValue::from_static("default-src *:*/content/ *:*/blockheight *:*/blockhash *:*/blockhash/ *:*/blocktime 'unsafe-eval' 'unsafe-inline' data: blob:"),
