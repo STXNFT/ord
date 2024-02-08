@@ -13,6 +13,8 @@ pub(super) struct Batch {
   pub(super) reinscribe: bool,
   pub(super) reveal_fee_rate: FeeRate,
   pub(super) satpoint: Option<SatPoint>,
+  pub(crate) commit_change_address: Option<Address>,
+  pub(crate) payouts: Vec<Payout>,
 }
 
 impl Default for Batch {
@@ -30,6 +32,8 @@ impl Default for Batch {
       reinscribe: false,
       reveal_fee_rate: 1.0.try_into().unwrap(),
       satpoint: None,
+      commit_change_address: None,
+      payouts: Vec::new(),
     }
   }
 }
@@ -48,8 +52,7 @@ impl Batch {
 
     let commit_tx_change = [
       get_change_address(client, chain)?,
-      get_change_address(client, chain)?,
-    ];
+      self.commit_change_address.clone().unwrap_or(get_change_address(client, chain)?)];
 
     let (commit_tx, reveal_tx, recovery_key_pair, total_fees) = self
       .create_batch_inscription_transactions(
@@ -329,19 +332,33 @@ impl Batch {
       reveal_outputs.clone(),
       &reveal_script,
     );
-
-    let unsigned_commit_tx = TransactionBuilder::new(
-      satpoint,
-      wallet_inscriptions,
-      utxos.clone(),
-      locked_utxos.clone(),
-      runic_utxos,
-      commit_tx_address.clone(),
-      change,
-      self.commit_fee_rate,
-      Target::Value(reveal_fee + total_postage),
-    )
-    .build_transaction()?;
+    
+    let unsigned_commit_tx = match self.payouts.clone().len() > 0 {
+      true => TransactionBuilder::new_with_payouts(
+        satpoint,
+        wallet_inscriptions,
+        utxos.clone(),
+        locked_utxos.clone(),
+        runic_utxos,
+        commit_tx_address.clone(),
+        change,
+        self.commit_fee_rate,
+        Target::Value(reveal_fee + total_postage),
+        self.payouts.clone(),
+      )
+      .build_transaction()?,
+      false => TransactionBuilder::new(
+        satpoint,
+        wallet_inscriptions,
+        utxos.clone(),
+        locked_utxos.clone(),
+        runic_utxos,
+        commit_tx_address.clone(),
+        change,
+        self.commit_fee_rate,
+        Target::Value(reveal_fee + total_postage),
+      ).build_transaction()?,
+    };
 
     let (vout, _commit_output) = unsigned_commit_tx
       .output

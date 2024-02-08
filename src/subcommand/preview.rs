@@ -122,6 +122,8 @@ impl Preview {
               reinscribe: false,
               satpoint: None,
               sat: None,
+              commit_change_address: None,
+              payouts: None,
             }),
           }),
         }
@@ -155,6 +157,8 @@ impl Preview {
               reinscribe: false,
               satpoint: None,
               sat: None,
+              commit_change_address: None,
+              payouts: None,
             }),
           }),
         }
