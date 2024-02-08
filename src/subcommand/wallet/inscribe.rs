@@ -1,3 +1,5 @@
+use crate::wallet::inscribe::Payout;
+
 use super::*;
 
 #[derive(Debug, Parser)]
@@ -68,6 +70,13 @@ pub(crate) struct Inscribe {
   pub(crate) satpoint: Option<SatPoint>,
   #[arg(long, help = "Inscribe <SAT>.", conflicts_with = "satpoint")]
   pub(crate) sat: Option<Sat>,
+
+  #[arg(long, help = "Payouts to append to the commit transaction. Format: <ADDRESS>:<AMOUNT>,<ADDRESS>:<AMOUNT>...")]
+  pub(crate) payouts: Option<String>,
+
+  #[arg(long, help = "Send leftover sats to <COMMMIT_CHANGE_ADDRESS>.")]
+  pub(crate) commit_change_address: Option<Address<NetworkUnchecked>>,
+  
 }
 
 impl Inscribe {
@@ -88,6 +97,30 @@ impl Inscribe {
     let mode;
     let parent_info;
     let sat;
+    let payouts ;
+    let commit_change_address = if self.commit_change_address.is_some() {
+      Some(self.commit_change_address.unwrap().require_network(chain.network())?)
+    } else {
+      None
+    };
+
+    payouts = match self.payouts {
+      Some(payouts_str) => {
+        payouts_str
+          .split(',')
+          .map(|payout| {
+            let mut parts = payout.split(':');
+            let address = parts.next().unwrap();
+            let amount_str = parts.next().unwrap();
+            let destination = Address::from_str(address).unwrap().require_network(chain.network()).unwrap();
+            let amount = Amount::from_str(amount_str).unwrap();
+            Payout { destination, amount }
+          })
+          .collect()
+      }
+      _ => vec![],
+    };
+    
 
     match (self.file, self.batch) {
       (Some(file), None) => {
@@ -170,6 +203,8 @@ impl Inscribe {
       reinscribe: self.reinscribe,
       reveal_fee_rate: self.fee_rate,
       satpoint,
+      commit_change_address,
+      payouts,
     }
     .inscribe(&locked_utxos, runic_utxos, &utxos, &wallet)
   }
@@ -440,6 +475,130 @@ mod tests {
       reveal_tx.output[0].value,
       20_000 - fee - (20_000 - commit_tx.output[0].value),
     );
+  }
+
+  #[test]
+  fn inscribe_with_custom_change_address() {
+    let utxos = vec![
+      (outpoint(1), Amount::from_sat(10_000)),
+      (outpoint(2), Amount::from_sat(20_000)),
+    ];
+    let mut inscriptions = BTreeMap::new();
+    inscriptions.insert(
+      SatPoint {
+        outpoint: outpoint(1),
+        offset: 0,
+      },
+      inscription_id(1),
+    );
+
+    let inscription = inscription("text/plain", "ord");
+    let satpoint = None;
+    let commit_address = change(0);
+    let commit_change_address = change(1);
+    let reveal_address = recipient();
+    let fee_rate = 3.3;
+
+    let (commit_tx, _reveal_tx, _private_key, _) = Batch {
+      satpoint,
+      parent_info: None,
+      inscriptions: vec![inscription],
+      destinations: vec![reveal_address],
+      commit_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
+      reveal_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
+      no_limit: false,
+      reinscribe: false,
+      postage: TARGET_POSTAGE,
+      mode: Mode::SharedOutput,
+      commit_change_address: Some(commit_change_address.clone()),
+      ..Default::default()
+    }
+    .create_batch_inscription_transactions(
+      inscriptions,
+      Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
+      utxos.into_iter().collect(),
+      [commit_address, commit_change_address.clone()],
+    )
+    .unwrap();
+
+
+    assert_eq!(
+      commit_change_address.script_pubkey(),
+      commit_tx.output.last().unwrap().script_pubkey
+    );
+  }
+
+  #[test]
+  fn inscribe_with_payouts() {
+    let utxos = vec![
+      (outpoint(1), Amount::from_sat(10_000)),
+      (outpoint(2), Amount::from_sat(50_000)),
+    ];
+    let mut inscriptions = BTreeMap::new();
+    inscriptions.insert(
+      SatPoint {
+        outpoint: outpoint(1),
+        offset: 0,
+      },
+      inscription_id(1),
+    );
+
+    let inscription = inscription("text/plain", "ord");
+    let satpoint = None;
+    let commit_address = change(0);
+    let commit_change_address = change(1);
+    let reveal_address = recipient();
+    let fee_rate = 3.3;
+    let payouts = vec![
+      Payout {
+        destination: change(2),
+        amount: Amount::from_sat(5_000),
+      },
+      Payout {
+        destination: change(3),
+        amount: Amount::from_sat(5_000),
+      },
+    ];
+
+    let (commit_tx, reveal_tx, _private_key, _) = Batch {
+      satpoint,
+      parent_info: None,
+      inscriptions: vec![inscription],
+      destinations: vec![reveal_address],
+      commit_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
+      reveal_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
+      no_limit: false,
+      reinscribe: false,
+      postage: TARGET_POSTAGE,
+      mode: Mode::SharedOutput,
+      commit_change_address: Some(commit_change_address.clone()),
+      payouts,
+      ..Default::default()
+    }
+    .create_batch_inscription_transactions(
+      inscriptions,
+      Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
+      utxos.into_iter().collect(),
+      [commit_address, commit_change_address.clone()],
+    )
+    .unwrap();
+
+    let fee = FeeRate::try_from(fee_rate)
+      .unwrap()
+      .fee(reveal_tx.vsize())
+      .to_sat();
+
+    tprintln!("reveal_fee: {:?}", fee);
+    assert_eq!(
+      commit_change_address.script_pubkey(),
+      commit_tx.output.last().unwrap().script_pubkey
+    );
+
+    assert_eq!(commit_tx.output.len(), 4);
   }
 
   #[test]

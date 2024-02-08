@@ -43,3 +43,9 @@ pub struct ParentInfo {
   pub location: SatPoint,
   pub tx_out: TxOut,
 }
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+pub struct Payout {
+  pub destination: Address,
+  pub amount: Amount,
+}

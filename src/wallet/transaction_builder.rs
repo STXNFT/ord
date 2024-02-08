@@ -32,8 +32,7 @@
 //! expected.
 
 use {
-  super::*,
-  std::cmp::{max, min},
+  self::inscribe::Payout, super::*, std::cmp::{max, min}
 };
 
 #[derive(Debug, PartialEq)]
@@ -105,6 +104,7 @@ pub struct TransactionBuilder {
   target: Target,
   unused_change_addresses: Vec<Address>,
   utxos: BTreeSet<OutPoint>,
+  payouts: Vec<Payout>,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -140,6 +140,37 @@ impl TransactionBuilder {
       runic_utxos,
       target,
       unused_change_addresses: change.to_vec(),
+      payouts: Vec::new(),
+    }
+  }
+
+  pub fn new_with_payouts(
+    outgoing: SatPoint,
+    inscriptions: BTreeMap<SatPoint, InscriptionId>,
+    amounts: BTreeMap<OutPoint, Amount>,
+    locked_utxos: BTreeSet<OutPoint>,
+    runic_utxos: BTreeSet<OutPoint>,
+    recipient: Address,
+    change: [Address; 2],
+    fee_rate: FeeRate,
+    target: Target,
+    payouts: Vec<Payout>
+  ) -> Self {
+    Self {
+      utxos: amounts.keys().cloned().collect(),
+      amounts,
+      change_addresses: change.iter().cloned().collect(),
+      fee_rate,
+      inputs: Vec::new(),
+      inscriptions,
+      locked_utxos,
+      outgoing,
+      outputs: Vec::new(),
+      recipient,
+      runic_utxos,
+      target,
+      unused_change_addresses: change.to_vec(),
+      payouts,
     }
   }
 
@@ -170,7 +201,7 @@ impl TransactionBuilder {
 
     self
       .select_outgoing()?
-      .align_outgoing()
+      .align_outgoing() 
       .pad_alignment_output()?
       .add_value()?
       .strip_value()
@@ -364,12 +395,20 @@ impl TransactionBuilder {
       {
         tprintln!("stripped {} sats", (value - target).to_sat());
         self.outputs.last_mut().expect("no outputs found").1 = target;
+
+        let mut payout_total = Amount::from_sat(0);
+        for payout in self.payouts.clone() {
+          self.outputs.push((payout.destination.clone(), payout.amount));
+
+          payout_total += payout.amount;
+        }
+
         self.outputs.push((
           self
             .unused_change_addresses
             .pop()
             .expect("not enough change addresses"),
-          value - target,
+          value - target - payout_total,
         ));
       }
     }
@@ -591,8 +630,12 @@ impl TransactionBuilder {
           self
             .change_addresses
             .iter()
-            .any(|change_address| change_address.script_pubkey() == output.script_pubkey),
-          "invariant: all outputs are either change or recipient: unrecognized output {}",
+            .any(|change_address| change_address.script_pubkey() == output.script_pubkey) || 
+          self
+            .payouts
+            .iter()
+            .any(|payout| payout.destination.script_pubkey() == output.script_pubkey),
+          "invariant: all outputs are either change, recipient, or payout: unrecognized output {}",
           output.script_pubkey
         );
       }
@@ -782,6 +825,7 @@ mod tests {
         (change(1), Amount::from_sat(1_724)),
       ],
       target: Target::Postage,
+      payouts: Vec::new(),
     };
 
     pretty_assert_eq!(
@@ -1321,6 +1365,7 @@ mod tests {
         (change(1), Amount::from_sat(1_774)),
       ],
       target: Target::Postage,
+      payouts: Vec::new(),
     }
     .build()
     .unwrap();
@@ -1352,6 +1397,7 @@ mod tests {
         (change(0), Amount::from_sat(1_774)),
       ],
       target: Target::Postage,
+      payouts: Vec::new(),
     }
     .build()
     .unwrap();
