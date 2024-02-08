@@ -157,9 +157,9 @@ impl Inscribe {
           .map(|payout| {
             let mut parts = payout.split(':');
             let address = parts.next().unwrap();
-            let amount_str = parts.next().unwrap();
+            let amount_sats = parts.next().unwrap().parse::<u64>().unwrap();
             let destination = Address::from_str(address).unwrap().require_network(chain.network()).unwrap();
-            let amount = Amount::from_str(amount_str).unwrap();
+            let amount = Amount::from_sat(amount_sats);
             Payout { destination, amount }
           })
           .collect()
