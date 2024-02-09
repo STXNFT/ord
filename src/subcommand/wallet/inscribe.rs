@@ -167,6 +167,10 @@ impl Inscribe {
       _ => vec![],
     };
 
+    if payouts.len() > 0 && self.satpoint.is_none()  {
+      return Err(anyhow!("`payouts` can only be used with `satpoint`"));
+    }
+
     match (self.file, self.batch) {
       (Some(file), None) => {
         parent_info = Inscribe::get_parent_info(self.parent, &index, &utxos, &client, chain)?;

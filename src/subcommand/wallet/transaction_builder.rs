@@ -396,11 +396,14 @@ impl TransactionBuilder {
         tprintln!("stripped {} sats", (value - target).to_sat());
         self.outputs.last_mut().expect("no outputs found").1 = target;
 
-        let mut payout_total = Amount::from_sat(0);
+        let payout_total = self
+          .payouts
+          .iter()
+          .map(|payout| payout.amount)
+          .sum::<Amount>();
+
         for payout in self.payouts.clone() {
           self.outputs.push((payout.destination.clone(), payout.amount));
-
-          payout_total += payout.amount;
         }
 
         self.outputs.push((
