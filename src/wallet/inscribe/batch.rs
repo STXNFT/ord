@@ -428,7 +428,7 @@ impl Batch {
         commit_tx_address.clone(),
         change,
         self.commit_fee_rate,
-        Target::Value(reveal_fee + Amount::from_sat(total_postage)),
+        target,
       )
       .build_transaction()?,
     };

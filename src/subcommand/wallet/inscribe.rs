@@ -202,7 +202,7 @@ impl Inscribe {
         if let Some(sat) = batchfile.sat {
           Some(wallet.find_sat_in_outputs(sat)?)
         } else {
-          batchfile.satpoint
+          self.satpoint.or(batchfile.satpoint)
         }
       }
       _ => unreachable!(),
@@ -443,7 +443,7 @@ mod tests {
   fn inscribe_with_payouts() {
     let utxos = vec![
       (outpoint(1), tx_out(10000, address())),
-      (outpoint(2), tx_out(50000, address())),
+      (outpoint(2), tx_out(27940, address())),
     ];
     let mut inscriptions = BTreeMap::new();
     inscriptions.insert(
@@ -454,23 +454,32 @@ mod tests {
       vec![inscription_id(1)],
     );
 
-    let inscription = inscription("text/plain", "ord");
+    let inscription = inscription("image/png", "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss");
     let satpoint = Some(SatPoint {
       outpoint: outpoint(2),
       offset: 0,
     });
     let commit_address = change(0);
-    let commit_change_address = change(1);
-    let reveal_address = recipient();
-    let fee_rate = 3.3;
+    let commit_change_address = Address::from_str("2MvjYhGLfUfFWtiUx3qKAFMEPDoFfyhNpjr")
+      .unwrap()
+      .assume_checked();
+    let reveal_address =
+      Address::from_str("tb1psmxwe3fgpur9xmlh987qkkdgfxlxtj9ntxgy3l2hz4rv9rxlks3s2wl2ad")
+        .unwrap()
+        .assume_checked();
+    let fee_rate = 3.0;
     let payouts = vec![
       Payout {
-        destination: change(2),
-        amount: Amount::from_sat(5_000),
+        destination: Address::from_str("2MwpLVc75dQqPXWqjNRrrG2y9ZCpuwL1PTt")
+          .unwrap()
+          .assume_checked(),
+        amount: Amount::from_sat(8_500),
       },
       Payout {
-        destination: change(3),
-        amount: Amount::from_sat(5_000),
+        destination: Address::from_str("tb1qqju26gr9kfagu73h0y5nnpyv8czz0azdc00tql")
+          .unwrap()
+          .assume_checked(),
+        amount: Amount::from_sat(9_000),
       },
     ];
 
@@ -483,8 +492,8 @@ mod tests {
       reveal_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
       no_limit: false,
       reinscribe: false,
-      postages: vec![TARGET_POSTAGE],
-      mode: Mode::SharedOutput,
+      postages: vec![Amount::from_sat(600)],
+      mode: Mode::SeparateOutputs,
       commit_change_address: Some(commit_change_address.clone()),
       payouts,
       ..Default::default()
@@ -505,6 +514,7 @@ mod tests {
       .to_sat();
 
     tprintln!("reveal_fee: {:?}", fee);
+    tprintln!("commit tx: {:?}", commit_tx);
     assert_eq!(
       commit_change_address.script_pubkey(),
       commit_tx.output.last().unwrap().script_pubkey
