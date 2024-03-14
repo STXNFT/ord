@@ -102,6 +102,7 @@ impl Inscribe {
     let inscriptions;
     let mode;
     let parent_info;
+    let reinscribe;
     let reveal_satpoints;
     let payouts;
     let commit_change_address = if self.commit_change_address.is_some() {
@@ -166,6 +167,8 @@ impl Inscribe {
 
         mode = Mode::SeparateOutputs;
 
+        reinscribe = self.reinscribe;
+
         reveal_satpoints = Vec::new();
 
         destinations = vec![match self.destination.clone() {
@@ -199,6 +202,8 @@ impl Inscribe {
 
         mode = batchfile.mode;
 
+        reinscribe = batchfile.reinscribe;
+
         if let Some(sat) = batchfile.sat {
           Some(wallet.find_sat_in_outputs(sat)?)
         } else {
@@ -218,7 +223,7 @@ impl Inscribe {
       no_limit: self.no_limit,
       parent_info,
       postages,
-      reinscribe: self.reinscribe,
+      reinscribe,
       reveal_fee_rate: self.fee_rate,
       reveal_satpoints,
       satpoint,

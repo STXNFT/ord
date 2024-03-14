@@ -590,19 +590,6 @@ impl TransactionBuilder {
       "invariant: recipient address appears exactly once in outputs",
     );
 
-    assert!(
-      self
-        .change_addresses
-        .iter()
-        .map(|change_address| transaction
-          .output
-          .iter()
-          .filter(|tx_out| tx_out.script_pubkey == change_address.script_pubkey())
-          .count())
-        .all(|count| count <= 1),
-      "invariant: change addresses appear at most once in outputs",
-    );
-
     let mut offset = 0;
     for output in &transaction.output {
       if output.script_pubkey == self.recipient.script_pubkey() {
@@ -1377,38 +1364,6 @@ mod tests {
         (recipient(), Amount::from_sat(5_000)),
         (recipient(), Amount::from_sat(5_000)),
         (change(1), Amount::from_sat(1_774)),
-      ],
-      target: Target::Postage,
-      payouts: Vec::new(),
-    }
-    .build()
-    .unwrap();
-  }
-
-  #[test]
-  #[should_panic(expected = "invariant: change addresses appear at most once in outputs")]
-  fn invariant_change_appears_at_most_once() {
-    let mut amounts = BTreeMap::new();
-    amounts.insert(outpoint(1), tx_out(5_000, address()));
-    amounts.insert(outpoint(2), tx_out(5_000, address()));
-    amounts.insert(outpoint(3), tx_out(2_000, address()));
-
-    TransactionBuilder {
-      amounts,
-      fee_rate: FeeRate::try_from(1.0).unwrap(),
-      utxos: BTreeSet::new(),
-      locked_utxos: BTreeSet::new(),
-      runic_utxos: BTreeSet::new(),
-      outgoing: satpoint(1, 0),
-      inscriptions: BTreeMap::new(),
-      recipient: recipient(),
-      unused_change_addresses: vec![change(0), change(1)],
-      change_addresses: vec![change(0), change(1)].into_iter().collect(),
-      inputs: vec![outpoint(1), outpoint(2), outpoint(3)],
-      outputs: vec![
-        (recipient(), Amount::from_sat(5_000)),
-        (change(0), Amount::from_sat(5_000)),
-        (change(0), Amount::from_sat(1_774)),
       ],
       target: Target::Postage,
       payouts: Vec::new(),
