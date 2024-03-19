@@ -1,10 +1,10 @@
 use {
   super::*,
   base64::{self, Engine},
-  bitcoin::secp256k1::{All, Secp256k1},
   bitcoin::{
     bip32::{ChildNumber, DerivationPath, ExtendedPrivKey, Fingerprint},
     psbt::Psbt,
+    secp256k1::{All, Secp256k1},
     Network,
   },
   bitcoincore_rpc::bitcoincore_rpc_json::{Descriptor, ImportDescriptors, Timestamp},
@@ -140,6 +140,125 @@ impl Wallet {
           let info = result?;
           output_info.insert(output, info);
         }
+
+        let requests = output_info
+          .iter()
+          .flat_map(|(_output, info)| info.inscriptions.clone())
+          .collect::<Vec<InscriptionId>>()
+          .into_iter()
+          .map(|id| (id, Self::get_inscription_info(&async_ord_client, id)))
+          .collect::<Vec<(InscriptionId, _)>>();
+
+        let futures = requests.into_iter().map(|(output, req)| async move {
+          let result = req.await;
+          (output, result)
+        });
+
+        let (results, status) = try_join!(
+          future::join_all(futures).map(Ok),
+          Self::get_server_status(&async_ord_client)
+        )?;
+
+        let mut inscriptions = BTreeMap::new();
+        let mut inscription_info = BTreeMap::new();
+        for (id, result) in results {
+          let info = result?;
+          inscriptions
+            .entry(info.satpoint)
+            .or_insert_with(Vec::new)
+            .push(id);
+
+          inscription_info.insert(id, info);
+        }
+
+        Ok(Wallet {
+          bitcoin_client,
+          has_rune_index: status.rune_index,
+          has_sat_index: status.sat_index,
+          inscription_info,
+          inscriptions,
+          locked_utxos,
+          ord_client,
+          output_info,
+          rpc_url,
+          settings,
+          utxos,
+        })
+      })
+  }
+  pub(crate) fn build_unchecked(
+    name: String,
+    no_sync: bool,
+    settings: Settings,
+    rpc_url: Url,
+    satpoint: SatPoint,
+  ) -> Result<Self> {
+    let mut headers = header::HeaderMap::new();
+
+    headers.insert(
+      header::ACCEPT,
+      header::HeaderValue::from_static("application/json"),
+    );
+
+    if let Some((username, password)) = settings.credentials() {
+      let credentials =
+        base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+      headers.insert(
+        header::AUTHORIZATION,
+        header::HeaderValue::from_str(&format!("Basic {credentials}")).unwrap(),
+      );
+    }
+
+    let ord_client = reqwest::blocking::ClientBuilder::new()
+      .default_headers(headers.clone())
+      .build()?;
+
+    tokio::runtime::Builder::new_multi_thread()
+      .enable_all()
+      .build()?
+      .block_on(async move {
+        let bitcoin_client = {
+          let client = Self::check_version(settings.bitcoin_rpc_client(Some(name.clone()))?)?;
+
+          if !client.list_wallets()?.contains(&name) {
+            client.load_wallet(&name)?;
+          }
+
+          Self::check_descriptors(&name, client.list_descriptors(None)?.descriptors)?;
+
+          client
+        };
+
+        let async_ord_client = OrdClient {
+          url: rpc_url.clone(),
+          client: reqwest::ClientBuilder::new()
+            .default_headers(headers.clone())
+            .build()?,
+        };
+
+        let chain_block_count = bitcoin_client.get_block_count().unwrap() + 1;
+
+        if !no_sync {
+          for i in 0.. {
+            let response = async_ord_client.get("/blockcount").await?;
+            if response.text().await?.parse::<u64>().unwrap() >= chain_block_count {
+              break;
+            } else if i == 20 {
+              bail!("wallet failed to synchronize with ord server");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+          }
+        }
+
+        let mut utxos = Self::get_utxos(&bitcoin_client)?;
+        let locked_utxos = Self::get_locked_utxos(&bitcoin_client)?;
+        utxos.extend(locked_utxos.clone());
+
+        let outpoint = satpoint.outpoint;
+        let output = Self::get_output(&async_ord_client, outpoint).await?;
+
+        let mut output_info = BTreeMap::new();
+        output_info.insert(outpoint, output);
 
         let requests = output_info
           .iter()

@@ -28,6 +28,10 @@ pub(crate) struct WalletCommand {
   pub(crate) name: String,
   #[arg(long, alias = "nosync", help = "Do not update index.")]
   pub(crate) no_sync: bool,
+
+  #[arg(long, help = "Only load wallet information for this satpoint.")]
+  pub(crate) checked_satpoint: Option<SatPoint>,
+
   #[arg(
     long,
     help = "Use ord running at <SERVER_URL>. [default: http://localhost:80]"
@@ -76,19 +80,35 @@ impl WalletCommand {
       _ => {}
     };
 
-    let wallet = Wallet::build(
-      self.name.clone(),
-      self.no_sync,
-      settings.clone(),
-      self
-        .server_url
-        .as_ref()
-        .map(Url::as_str)
-        .or(settings.server_url())
-        .unwrap_or("http://127.0.0.1:80")
-        .parse::<Url>()
-        .context("invalid server URL")?,
-    )?;
+    let wallet = match self.checked_satpoint.is_some() {
+      true => Wallet::build_unchecked(
+        self.name.clone(),
+        self.no_sync,
+        settings.clone(),
+        self
+          .server_url
+          .as_ref()
+          .map(Url::as_str)
+          .or(settings.server_url())
+          .unwrap_or("http://127.0.0.1:80")
+          .parse::<Url>()
+          .context("invalid server URL")?,
+        self.checked_satpoint.unwrap(),
+      )?,
+      false => Wallet::build(
+        self.name.clone(),
+        self.no_sync,
+        settings.clone(),
+        self
+          .server_url
+          .as_ref()
+          .map(Url::as_str)
+          .or(settings.server_url())
+          .unwrap_or("http://127.0.0.1:80")
+          .parse::<Url>()
+          .context("invalid server URL")?,
+      )?,
+    };
 
     match self.subcommand {
       Subcommand::Balance => balance::run(wallet),
