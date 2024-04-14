@@ -253,12 +253,14 @@ impl Wallet {
         let mut utxos = BTreeMap::new();
 
         let outpoint = satpoint.outpoint;
-        let output = Self::get_output(&async_ord_client, outpoint).await?;
+        let mut output = Self::get_output(&async_ord_client, outpoint).await?;
+
+        let address = Address::from_str(output.address.as_mut().unwrap())?.assume_checked();
 
         utxos.insert(
           outpoint,
           TxOut {
-            script_pubkey: ScriptBuf::from_hex(&output.script_pubkey)?,
+            script_pubkey: address.script_pubkey(),
             value: output.value,
           },
         );
