@@ -249,13 +249,12 @@ impl Wallet {
             tokio::time::sleep(Duration::from_millis(50)).await;
           }
         }
-
-        let mut utxos = BTreeMap::new();
-
         let outpoint = satpoint.outpoint;
+        let mut utxos = BTreeMap::new();
         let mut output = Self::get_output(&async_ord_client, outpoint).await?;
 
-        let address = Address::from_str(output.address.as_mut().unwrap())?.assume_checked();
+        let address = Address::from_str(output.address.as_mut().unwrap())?
+          .require_network(settings.chain().network())?;
 
         utxos.insert(
           outpoint,
