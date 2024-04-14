@@ -250,12 +250,20 @@ impl Wallet {
           }
         }
 
-        let mut utxos = Self::get_utxos(&bitcoin_client)?;
-        let locked_utxos = Self::get_locked_utxos(&bitcoin_client)?;
-        utxos.extend(locked_utxos.clone());
+        let mut utxos = BTreeMap::new();
 
         let outpoint = satpoint.outpoint;
         let output = Self::get_output(&async_ord_client, outpoint).await?;
+
+        utxos.insert(
+          outpoint,
+          TxOut {
+            script_pubkey: ScriptBuf::from_hex(&output.script_pubkey)?,
+            value: output.value,
+          },
+        );
+        let locked_utxos = Self::get_locked_utxos(&bitcoin_client)?;
+        utxos.extend(locked_utxos.clone());
 
         let mut output_info = BTreeMap::new();
         output_info.insert(outpoint, output);
