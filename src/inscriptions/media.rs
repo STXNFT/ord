@@ -120,10 +120,6 @@ impl Media {
 
     let extension = extension.to_lowercase();
 
-    if extension == "mp4" {
-      Media::check_mp4_codec(path)?;
-    }
-
     for (content_type, mode, _, extensions) in Self::TABLE {
       if extensions.contains(&extension.as_str()) {
         return Ok((*content_type, *mode));
