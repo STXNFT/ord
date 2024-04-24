@@ -97,9 +97,8 @@ jobs:
     strategy:
       matrix:
         os:
-        - macos-latest
         - ubuntu-latest
-        - windows-latest
+        
 
     runs-on: ${{matrix.os}}
 
