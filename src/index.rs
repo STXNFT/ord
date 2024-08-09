@@ -2250,6 +2250,17 @@ impl Index {
       .collect()
   }
 
+  pub fn get_address_outputs(
+    &self,
+    address: &Address,
+  ) -> Result<Vec<Option<(api::Output, TxOut)>>> {
+    self
+      .get_address_info(address)?
+      .into_iter()
+      .map(|outpoint| self.get_address_output(outpoint))
+      .collect()
+  }
+
   pub(crate) fn get_aggregated_rune_balances_for_outputs(
     &self,
     outputs: &Vec<OutPoint>,
@@ -2336,6 +2347,40 @@ impl Index {
     let runes = self.get_rune_balances_for_output(outpoint)?;
 
     let spent = self.is_output_spent(outpoint)?;
+
+    Ok(Some((
+      api::Output::new(
+        self.settings.chain(),
+        inscriptions,
+        outpoint,
+        txout.clone(),
+        indexed,
+        runes,
+        sat_ranges,
+        spent,
+      ),
+      txout,
+    )))
+  }
+
+  pub(crate) fn get_address_output(
+    &self,
+    outpoint: OutPoint,
+  ) -> Result<Option<(api::Output, TxOut)>> {
+    let sat_ranges = self.list(outpoint)?;
+
+    let outpoint_to_txout = self.database.begin_read()?.open_table(OUTPOINT_TO_TXOUT)?;
+    let val = outpoint_to_txout.get(&outpoint.store())?;
+    let txout = if let Some(value) = val {
+      TxOut::load(value.value())
+    } else {
+      return Ok(None);
+    };
+
+    let indexed = true;
+    let spent = false;
+    let inscriptions = self.get_inscriptions_for_output(outpoint)?;
+    let runes = self.get_rune_balances_for_output(outpoint)?;
 
     Ok(Some((
       api::Output::new(

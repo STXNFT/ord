@@ -164,6 +164,7 @@ impl Server {
       let router = Router::new()
         .route("/", get(Self::home))
         .route("/address/:address", get(Self::address))
+        .route("/address/:address/outputs", get(Self::address_outputs))
         .route("/block/:query", get(Self::block))
         .route("/blockcount", get(Self::block_count))
         .route("/blockhash", get(Self::block_hash))
@@ -863,6 +864,33 @@ impl Server {
         }
         .page(server_config)
         .into_response()
+      })
+    })
+  }
+
+  async fn address_outputs(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(address): Path<Address<NetworkUnchecked>>,
+    AcceptJson(accept_json): AcceptJson,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      if !index.has_address_index() {
+        return Err(ServerError::NotFound(
+          "this server has no address index".to_string(),
+        ));
+      }
+
+      let address = address
+        .require_network(server_config.chain.network())
+        .map_err(|err| ServerError::BadRequest(err.to_string()))?;
+
+      let outputs = index.get_address_outputs(&address)?;
+
+      Ok(if accept_json {
+        Json(outputs).into_response()
+      } else {
+        StatusCode::NOT_FOUND.into_response()
       })
     })
   }
