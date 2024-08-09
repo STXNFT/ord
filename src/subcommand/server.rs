@@ -889,7 +889,7 @@ impl Server {
       let mut response = Vec::new();
       for output in outputs {
         match output {
-          Some((output, _)) => response.push(output),
+          Some(output) => response.push(output),
           None => continue,
         }
       }

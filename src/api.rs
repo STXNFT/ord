@@ -219,3 +219,30 @@ pub struct SatInscriptions {
   pub more: bool,
   pub page: u64,
 }
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct AddressOutput {
+  pub inscriptions: Vec<InscriptionId>,
+  pub runes: BTreeMap<SpacedRune, Pile>,
+  pub sat_ranges: Option<Vec<(u64, u64)>>,
+  pub outpoint: OutPoint,
+  pub value: u64,
+}
+
+impl AddressOutput {
+  pub fn new(
+    inscriptions: Vec<InscriptionId>,
+    outpoint: OutPoint,
+    tx_out: TxOut,
+    runes: BTreeMap<SpacedRune, Pile>,
+    sat_ranges: Option<Vec<(u64, u64)>>,
+  ) -> Self {
+    Self {
+      inscriptions,
+      outpoint,
+      runes,
+      sat_ranges,
+      value: tx_out.value,
+    }
+  }
+}

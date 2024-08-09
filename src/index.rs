@@ -15,6 +15,7 @@ use {
     subcommand::{find::FindRangeOutput, server::query},
     templates::StatusHtml,
   },
+  api::AddressOutput,
   bitcoin::block::Header,
   bitcoincore_rpc::{
     json::{GetBlockHeaderResult, GetBlockStatsResult},
@@ -2250,10 +2251,7 @@ impl Index {
       .collect()
   }
 
-  pub fn get_address_outputs(
-    &self,
-    address: &Address,
-  ) -> Result<Vec<Option<(api::Output, TxOut)>>> {
+  pub fn get_address_outputs(&self, address: &Address) -> Result<Vec<Option<api::AddressOutput>>> {
     self
       .get_address_info(address)?
       .into_iter()
@@ -2363,10 +2361,7 @@ impl Index {
     )))
   }
 
-  pub(crate) fn get_address_output(
-    &self,
-    outpoint: OutPoint,
-  ) -> Result<Option<(api::Output, TxOut)>> {
+  pub(crate) fn get_address_output(&self, outpoint: OutPoint) -> Result<Option<AddressOutput>> {
     let sat_ranges = self.list(outpoint)?;
 
     let outpoint_to_txout = self.database.begin_read()?.open_table(OUTPOINT_TO_TXOUT)?;
@@ -2382,18 +2377,12 @@ impl Index {
     let inscriptions = self.get_inscriptions_for_output(outpoint)?;
     let runes = self.get_rune_balances_for_output(outpoint)?;
 
-    Ok(Some((
-      api::Output::new(
-        self.settings.chain(),
-        inscriptions,
-        outpoint,
-        txout.clone(),
-        indexed,
-        runes,
-        sat_ranges,
-        spent,
-      ),
+    Ok(Some(api::AddressOutput::new(
+      inscriptions,
+      outpoint,
       txout,
+      runes,
+      sat_ranges,
     )))
   }
 }
