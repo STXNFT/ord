@@ -886,9 +886,16 @@ impl Server {
         .map_err(|err| ServerError::BadRequest(err.to_string()))?;
 
       let outputs = index.get_address_outputs(&address)?;
+      let mut response = Vec::new();
+      for output in outputs {
+        match output {
+          Some((output, _)) => response.push(output),
+          None => continue,
+        }
+      }
 
       Ok(if accept_json {
-        Json(outputs).into_response()
+        Json(response).into_response()
       } else {
         StatusCode::NOT_FOUND.into_response()
       })
