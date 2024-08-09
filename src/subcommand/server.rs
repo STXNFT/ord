@@ -12,6 +12,7 @@ use {
     PreviewMarkdownHtml, PreviewModelHtml, PreviewPdfHtml, PreviewTextHtml, PreviewUnknownHtml,
     PreviewVideoHtml, RangeHtml, RareTxt, RuneHtml, RunesHtml, SatHtml, TransactionHtml,
   },
+  api::AddressSummary,
   axum::{
     body,
     extract::{DefaultBodyLimit, Extension, Json, Path, Query},
@@ -164,7 +165,7 @@ impl Server {
       let router = Router::new()
         .route("/", get(Self::home))
         .route("/address/:address", get(Self::address))
-        .route("/address/:address/outputs", get(Self::address_outputs))
+        .route("/address/:address/summary", get(Self::address_summary))
         .route("/block/:query", get(Self::block))
         .route("/blockcount", get(Self::block_count))
         .route("/blockhash", get(Self::block_hash))
@@ -868,7 +869,7 @@ impl Server {
     })
   }
 
-  async fn address_outputs(
+  async fn address_summary(
     Extension(server_config): Extension<Arc<ServerConfig>>,
     Extension(index): Extension<Arc<Index>>,
     Path(address): Path<Address<NetworkUnchecked>>,
@@ -886,16 +887,22 @@ impl Server {
         .map_err(|err| ServerError::BadRequest(err.to_string()))?;
 
       let outputs = index.get_address_outputs(&address)?;
-      let mut response = Vec::new();
+      let mut address_outputs = Vec::new();
+      let mut cardinal_balance = 0;
       for output in outputs {
         match output {
-          Some(output) => response.push(output),
+          Some(output) => {
+            if output.inscriptions.is_empty() && output.runes.is_empty() {
+              cardinal_balance += output.value;
+            }
+            address_outputs.push(output);
+          }
           None => continue,
         }
       }
 
       Ok(if accept_json {
-        Json(response).into_response()
+        Json(AddressSummary::new(address_outputs, cardinal_balance)).into_response()
       } else {
         StatusCode::NOT_FOUND.into_response()
       })

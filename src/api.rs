@@ -222,11 +222,11 @@ pub struct SatInscriptions {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct AddressOutput {
-  pub inscriptions: Vec<InscriptionId>,
-  pub runes: BTreeMap<SpacedRune, Pile>,
-  pub sat_ranges: Option<Vec<(u64, u64)>>,
   pub outpoint: OutPoint,
   pub value: u64,
+  pub inscriptions: Vec<InscriptionId>,
+  pub sat_ranges: Option<Vec<(u64, u64)>>,
+  pub runes: BTreeMap<SpacedRune, Pile>,
 }
 
 impl AddressOutput {
@@ -243,6 +243,21 @@ impl AddressOutput {
       runes,
       sat_ranges,
       value: tx_out.value,
+    }
+  }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct AddressSummary {
+  outputs: Vec<AddressOutput>,
+  cardinal_balance: u64,
+}
+
+impl AddressSummary {
+  pub fn new(outputs: Vec<AddressOutput>, cardinal_balance: u64) -> Self {
+    Self {
+      outputs,
+      cardinal_balance,
     }
   }
 }
