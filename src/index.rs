@@ -2372,8 +2372,6 @@ impl Index {
       return Ok(None);
     };
 
-    let indexed = true;
-    let spent = false;
     let inscriptions = self.get_inscriptions_for_output(outpoint)?;
     let runes = self.get_rune_balances_for_output(outpoint)?;
 
