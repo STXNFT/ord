@@ -29,6 +29,7 @@ use {
     ReadOnlyTable, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, RepairSession,
     StorageError, Table, TableDefinition, TableHandle, TableStats, WriteTransaction,
   },
+  sha3::digest::generic_array::sequence,
   std::{
     collections::HashMap,
     io::{BufWriter, Write},
@@ -2304,6 +2305,105 @@ impl Index {
     }
 
     Ok(acc)
+  }
+
+  pub fn get_sequence_numbers_for_inscriptions(
+    &self,
+    inscriptions: Vec<InscriptionId>,
+  ) -> Result<Vec<u32>> {
+    let rtx = self.database.begin_read()?;
+
+    let inscription_id_to_sequence_number = rtx.open_table(INSCRIPTION_ID_TO_SEQUENCE_NUMBER)?;
+
+    inscriptions
+      .into_iter()
+      .map(|inscription_id| {
+        Ok(
+          inscription_id_to_sequence_number
+            .get(&inscription_id.store())?
+            .map(|guard| guard.value())
+            .unwrap(),
+        )
+      })
+      .collect()
+  }
+
+  pub fn get_inscription_entries_for_sequence_numbers(
+    &self,
+    sequence_numbers: Vec<u32>,
+  ) -> Result<Vec<InscriptionEntry>> {
+    let rtx = self.database.begin_read()?;
+
+    let sequence_number_to_inscription_entry =
+      rtx.open_table(SEQUENCE_NUMBER_TO_INSCRIPTION_ENTRY)?;
+
+    sequence_numbers
+      .into_iter()
+      .map(|sequence_number| {
+        Ok(
+          sequence_number_to_inscription_entry
+            .get(&sequence_number)?
+            .map(|guard| InscriptionEntry::load(guard.value()))
+            .unwrap(),
+        )
+      })
+      .collect()
+  }
+
+  pub fn get_txouts_for_inscription_ids(
+    &self,
+    inscription_ids: Vec<InscriptionId>,
+  ) -> Result<Vec<TxOut>> {
+    let rtx = self.database.begin_read()?;
+
+    let sequence_number_to_satpoint = rtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
+    let outpoint_to_txout = rtx.open_table(OUTPOINT_TO_TXOUT)?;
+
+    inscription_ids
+      .into_iter()
+      .map(|inscription_id| {
+        let sequence_number = rtx
+          .open_table(INSCRIPTION_ID_TO_SEQUENCE_NUMBER)?
+          .get(&inscription_id.store())?
+          .map(|guard| guard.value())
+          .unwrap();
+
+        let satpoint = SatPoint::load(
+          *sequence_number_to_satpoint
+            .get(sequence_number)
+            .unwrap()
+            .unwrap()
+            .value(),
+        );
+
+        let outpoint = satpoint.outpoint;
+
+        let txout = outpoint_to_txout
+          .get(&outpoint.store())?
+          .map(|guard| TxOut::load(guard.value()));
+
+        Ok(txout)
+      })
+      .collect()
+  }
+
+  pub(crate) fn get_inscription_owners_for_output(
+    &self,
+    inscriptions: Vec<InscriptionId>,
+  ) -> Result<Vec<Address>> {
+    let sequence_numbers = self.get_sequence_numbers_for_inscriptions(inscriptions)?;
+    let inscription_entries =
+      self.get_inscription_entries_for_sequence_numbers(sequence_numbers)?;
+
+    let outpoint_to_txout = self.database.begin_read()?.open_table(OUTPOINT_TO_TXOUT)?;
+    let val = outpoint_to_txout.get(&outpoint.store())?;
+    let txout = if let Some(value) = val {
+      TxOut::load(value.value())
+    } else {
+      return Ok(None);
+    };
+
+    Ok(owners)
   }
 
   pub(crate) fn get_output_info(&self, outpoint: OutPoint) -> Result<Option<(api::Output, TxOut)>> {

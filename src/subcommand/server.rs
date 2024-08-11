@@ -195,6 +195,7 @@ impl Server {
         .route("/inscriptions", get(Self::inscriptions))
         .route("/inscriptions", post(Self::inscriptions_json))
         .route("/inscriptions/:page", get(Self::inscriptions_paginated))
+        .route("/inscription_owners", get(Self::inscriptions_json))
         .route(
           "/inscriptions/block/:height",
           get(Self::inscriptions_in_block),
@@ -1742,6 +1743,22 @@ impl Server {
 
           response.push(info);
         }
+
+        Json(response).into_response()
+      } else {
+        StatusCode::NOT_FOUND.into_response()
+      })
+    })
+  }
+
+  async fn inscription_owners(
+    Extension(index): Extension<Arc<Index>>,
+    AcceptJson(accept_json): AcceptJson,
+    inscriptions: Option<Query<Vec<InscriptionId>>>,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      Ok(if accept_json {
+        let Query(inscriptions) = inscriptions.unwrap_or_default();
 
         Json(response).into_response()
       } else {
