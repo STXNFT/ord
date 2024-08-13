@@ -2312,23 +2312,22 @@ impl Index {
   ) -> Result<Vec<(InscriptionId, TxOut)>> {
     let rtx = self.database.begin_read()?;
 
+    let inscription_id_to_sequence_number = rtx.open_table(INSCRIPTION_ID_TO_SEQUENCE_NUMBER)?;
     let sequence_number_to_satpoint = rtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
     let outpoint_to_txout = rtx.open_table(OUTPOINT_TO_TXOUT)?;
 
     let results = inscription_ids
       .into_iter()
       .map(|inscription_id| {
-        let sequence_number = rtx
-          .open_table(INSCRIPTION_ID_TO_SEQUENCE_NUMBER)?
+        let sequence_number = inscription_id_to_sequence_number
           .get(&inscription_id.store())?
           .map(|guard| guard.value())
-          .unwrap();
+          .ok_or_else(|| anyhow!("Failed to get sequence number"))?;
 
         let satpoint = SatPoint::load(
           *sequence_number_to_satpoint
-            .get(sequence_number)
-            .unwrap()
-            .unwrap()
+            .get(sequence_number)?
+            .ok_or_else(|| anyhow!("Failed to get satpoint"))?
             .value(),
         );
 
@@ -2337,6 +2336,7 @@ impl Index {
         let txout = outpoint_to_txout
           .get(&outpoint.store())?
           .map(|guard| TxOut::load(guard.value()))
+          .or(Err(anyhow!("Failed to get txout"))?)
           .unwrap();
 
         Ok((inscription_id, txout))
