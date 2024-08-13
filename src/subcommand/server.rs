@@ -60,7 +60,7 @@ struct Search {
 }
 // Define a struct to hold the query parameters
 #[derive(Deserialize)]
-struct InscriptionOwnersParams {
+struct InscriptionIdsParam {
   ids: String,
 }
 
@@ -200,8 +200,10 @@ impl Server {
         .route("/inscriptions", get(Self::inscriptions))
         .route("/inscriptions", post(Self::inscriptions_json))
         .route("/inscriptions/:page", get(Self::inscriptions_paginated))
-        .route("/inscription_owners", get(Self::inscription_owners))
-        .route("/inscription_states", get(Self::inscription_states))
+        .route(
+          "/inscription_chainstates",
+          get(Self::inscription_chainstates),
+        )
         .route(
           "/inscriptions/block/:height",
           get(Self::inscriptions_in_block),
@@ -1757,10 +1759,10 @@ impl Server {
     })
   }
 
-  async fn inscription_owners(
+  async fn inscription_chainstates(
     Extension(index): Extension<Arc<Index>>,
     AcceptJson(accept_json): AcceptJson,
-    Query(params): Query<InscriptionOwnersParams>,
+    Query(params): Query<InscriptionIdsParam>,
   ) -> ServerResult {
     task::block_in_place(|| {
       Ok(if accept_json {
@@ -1772,34 +1774,7 @@ impl Server {
           .filter_map(|x| x.ok())
           .collect();
 
-        let owners = index.get_inscription_owners(inscriptions_ids);
-
-        // convert to hashmap
-        let response: HashMap<_, _> = owners.into_iter().collect();
-
-        Json(response).into_response()
-      } else {
-        StatusCode::NOT_FOUND.into_response()
-      })
-    })
-  }
-
-  async fn inscription_states(
-    Extension(index): Extension<Arc<Index>>,
-    AcceptJson(accept_json): AcceptJson,
-    Query(params): Query<InscriptionOwnersParams>,
-  ) -> ServerResult {
-    task::block_in_place(|| {
-      Ok(if accept_json {
-        let inscriptions_ids = params
-          .ids
-          .split(",")
-          .into_iter()
-          .map(|id| InscriptionId::from_str(&id))
-          .filter_map(|x| x.ok())
-          .collect();
-
-        let response = index.get_inscription_states(inscriptions_ids)?;
+        let response = index.get_inscription_chainstates(inscriptions_ids)?;
 
         Json(response).into_response()
       } else {

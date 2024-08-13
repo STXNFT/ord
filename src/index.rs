@@ -2306,48 +2306,7 @@ impl Index {
     Ok(acc)
   }
 
-  pub fn get_txouts_for_inscription_ids(
-    &self,
-    inscription_ids: Vec<InscriptionId>,
-  ) -> Result<Vec<(InscriptionId, TxOut)>> {
-    let rtx = self.database.begin_read()?;
-
-    let inscription_id_to_sequence_number = rtx.open_table(INSCRIPTION_ID_TO_SEQUENCE_NUMBER)?;
-    let sequence_number_to_satpoint = rtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
-    let outpoint_to_txout = rtx.open_table(OUTPOINT_TO_TXOUT)?;
-
-    let results = inscription_ids
-      .into_iter()
-      .map(|inscription_id| {
-        let sequence_number = inscription_id_to_sequence_number
-          .get(&inscription_id.store())?
-          .map(|guard| guard.value())
-          .ok_or_else(|| anyhow!("Failed to get sequence number"))?;
-
-        let satpoint = SatPoint::load(
-          *sequence_number_to_satpoint
-            .get(sequence_number)
-            .unwrap()
-            .unwrap()
-            .value(),
-        );
-
-        let outpoint = satpoint.outpoint;
-
-        let txout = outpoint_to_txout
-          .get(&outpoint.store())?
-          .map(|guard| TxOut::load(guard.value()))
-          .unwrap();
-
-        Ok((inscription_id, txout))
-      })
-      .filter_map(|res: Result<(InscriptionId, TxOut)>| res.ok())
-      .collect();
-
-    Ok(results)
-  }
-
-  pub fn get_inscription_states(
+  pub fn get_inscription_chainstates(
     &self,
     inscription_ids: Vec<InscriptionId>,
   ) -> Result<Vec<InscriptionState>> {
@@ -2395,27 +2354,6 @@ impl Index {
       .collect();
 
     Ok(results)
-  }
-
-  pub(crate) fn get_inscription_owners(
-    &self,
-    inscriptions: Vec<InscriptionId>,
-  ) -> Vec<(InscriptionId, bitcoin::Address)> {
-    let txouts = self
-      .get_txouts_for_inscription_ids(inscriptions)
-      .unwrap_or_default();
-
-    let mut owners = Vec::new();
-    for (inscription_id, txout) in txouts {
-      let address = self
-        .settings
-        .chain()
-        .address_from_script(&txout.script_pubkey)
-        .unwrap();
-      owners.push((inscription_id, address));
-    }
-
-    return owners;
   }
 
   pub(crate) fn get_output_info(&self, outpoint: OutPoint) -> Result<Option<(api::Output, TxOut)>> {
