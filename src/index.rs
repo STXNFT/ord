@@ -2326,8 +2326,9 @@ impl Index {
 
         let satpoint = SatPoint::load(
           *sequence_number_to_satpoint
-            .get(sequence_number)?
-            .ok_or_else(|| anyhow!("Failed to get satpoint"))?
+            .get(sequence_number)
+            .unwrap()
+            .unwrap()
             .value(),
         );
 
@@ -2336,7 +2337,6 @@ impl Index {
         let txout = outpoint_to_txout
           .get(&outpoint.store())?
           .map(|guard| TxOut::load(guard.value()))
-          .or(Err(anyhow!("Failed to get txout"))?)
           .unwrap();
 
         Ok((inscription_id, txout))
