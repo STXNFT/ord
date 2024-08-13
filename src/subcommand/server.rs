@@ -201,6 +201,7 @@ impl Server {
         .route("/inscriptions", post(Self::inscriptions_json))
         .route("/inscriptions/:page", get(Self::inscriptions_paginated))
         .route("/inscription_owners", get(Self::inscription_owners))
+        .route("/inscription_states", get(Self::inscription_states))
         .route(
           "/inscriptions/block/:height",
           get(Self::inscriptions_in_block),
@@ -1775,6 +1776,30 @@ impl Server {
 
         // convert to hashmap
         let response: HashMap<_, _> = owners.into_iter().collect();
+
+        Json(response).into_response()
+      } else {
+        StatusCode::NOT_FOUND.into_response()
+      })
+    })
+  }
+
+  async fn inscription_states(
+    Extension(index): Extension<Arc<Index>>,
+    AcceptJson(accept_json): AcceptJson,
+    Query(params): Query<InscriptionOwnersParams>,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      Ok(if accept_json {
+        let inscriptions_ids = params
+          .ids
+          .split(",")
+          .into_iter()
+          .map(|id| InscriptionId::from_str(&id))
+          .filter_map(|x| x.ok())
+          .collect();
+
+        let response = index.get_inscription_states(inscriptions_ids)?;
 
         Json(response).into_response()
       } else {

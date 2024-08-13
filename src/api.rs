@@ -261,3 +261,22 @@ impl AddressSummary {
     }
   }
 }
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct InscriptionState {
+  pub id: InscriptionId,
+  pub satpoint: SatPoint,
+  pub value: u64,
+  pub address: String,
+}
+
+impl InscriptionState {
+  pub fn new(id: InscriptionId, satpoint: SatPoint, value: u64, address: String) -> Self {
+    Self {
+      id,
+      satpoint,
+      value,
+      address,
+    }
+  }
+}

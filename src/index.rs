@@ -15,7 +15,7 @@ use {
     subcommand::{find::FindRangeOutput, server::query},
     templates::StatusHtml,
   },
-  api::AddressOutput,
+  api::{AddressOutput, InscriptionState},
   bitcoin::block::Header,
   bitcoincore_rpc::{
     json::{GetBlockHeaderResult, GetBlockStatsResult},
@@ -2342,6 +2342,56 @@ impl Index {
         Ok((inscription_id, txout))
       })
       .filter_map(|res: Result<(InscriptionId, TxOut)>| res.ok())
+      .collect();
+
+    Ok(results)
+  }
+
+  pub fn get_inscription_states(
+    &self,
+    inscription_ids: Vec<InscriptionId>,
+  ) -> Result<Vec<InscriptionState>> {
+    let rtx = self.database.begin_read()?;
+
+    let inscription_id_to_sequence_number = rtx.open_table(INSCRIPTION_ID_TO_SEQUENCE_NUMBER)?;
+    let sequence_number_to_satpoint = rtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
+    let outpoint_to_txout = rtx.open_table(OUTPOINT_TO_TXOUT)?;
+
+    let results = inscription_ids
+      .into_iter()
+      .map(|inscription_id| {
+        let sequence_number = inscription_id_to_sequence_number
+          .get(&inscription_id.store())?
+          .map(|guard| guard.value())
+          .ok_or_else(|| anyhow!("Failed to get sequence number"))?;
+
+        let satpoint = SatPoint::load(
+          *sequence_number_to_satpoint
+            .get(sequence_number)
+            .unwrap()
+            .unwrap()
+            .value(),
+        );
+
+        let outpoint = satpoint.outpoint;
+
+        let txout = outpoint_to_txout
+          .get(&outpoint.store())?
+          .map(|guard| TxOut::load(guard.value()))
+          .unwrap();
+
+        let address: Address = self
+          .settings
+          .chain()
+          .address_from_script(&txout.script_pubkey)
+          .unwrap();
+
+        let inscription_state =
+          InscriptionState::new(inscription_id, satpoint, txout.value, address.to_string());
+
+        Ok(inscription_state)
+      })
+      .filter_map(|res: Result<InscriptionState>| res.ok())
       .collect();
 
     Ok(results)
