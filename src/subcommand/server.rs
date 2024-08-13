@@ -58,6 +58,11 @@ enum SpawnConfig {
 struct Search {
   query: String,
 }
+// Define a struct to hold the query parameters
+#[derive(Deserialize)]
+struct InscriptionOwnersParams {
+  ids: String,
+}
 
 #[derive(RustEmbed)]
 #[folder = "static"]
@@ -1754,14 +1759,24 @@ impl Server {
   async fn inscription_owners(
     Extension(index): Extension<Arc<Index>>,
     AcceptJson(accept_json): AcceptJson,
-    ids: Option<Query<Vec<InscriptionId>>>,
+    Query(params): Query<InscriptionOwnersParams>,
   ) -> ServerResult {
     task::block_in_place(|| {
       Ok(if accept_json {
-        let Query(inscriptions) = ids.unwrap_or_default();
-        let owners = index.get_inscription_owners(inscriptions);
+        let inscriptions_ids = params
+          .ids
+          .split(",")
+          .into_iter()
+          .map(|id| InscriptionId::from_str(&id))
+          .filter_map(|x| x.ok())
+          .collect();
 
-        Json(owners).into_response()
+        let owners = index.get_inscription_owners(inscriptions_ids);
+
+        // convert to hashmap
+        let response: HashMap<_, _> = owners.into_iter().collect();
+
+        Json(response).into_response()
       } else {
         StatusCode::NOT_FOUND.into_response()
       })

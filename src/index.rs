@@ -2309,13 +2309,13 @@ impl Index {
   pub fn get_txouts_for_inscription_ids(
     &self,
     inscription_ids: Vec<InscriptionId>,
-  ) -> Result<Vec<(InscriptionId, Option<TxOut>)>> {
+  ) -> Result<Vec<(InscriptionId, TxOut)>> {
     let rtx = self.database.begin_read()?;
 
     let sequence_number_to_satpoint = rtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
     let outpoint_to_txout = rtx.open_table(OUTPOINT_TO_TXOUT)?;
 
-    inscription_ids
+    let results = inscription_ids
       .into_iter()
       .map(|inscription_id| {
         let sequence_number = rtx
@@ -2336,11 +2336,15 @@ impl Index {
 
         let txout = outpoint_to_txout
           .get(&outpoint.store())?
-          .map(|guard| TxOut::load(guard.value()));
+          .map(|guard| TxOut::load(guard.value()))
+          .unwrap();
 
         Ok((inscription_id, txout))
       })
-      .collect()
+      .filter_map(|res: Result<(InscriptionId, TxOut)>| res.ok())
+      .collect();
+
+    Ok(results)
   }
 
   pub(crate) fn get_inscription_owners(
@@ -2353,14 +2357,12 @@ impl Index {
 
     let mut owners = Vec::new();
     for (inscription_id, txout) in txouts {
-      if let Some(txout) = txout {
-        let address = self
-          .settings
-          .chain()
-          .address_from_script(&txout.script_pubkey)
-          .unwrap();
-        owners.push((inscription_id, address));
-      }
+      let address = self
+        .settings
+        .chain()
+        .address_from_script(&txout.script_pubkey)
+        .unwrap();
+      owners.push((inscription_id, address));
     }
 
     return owners;
