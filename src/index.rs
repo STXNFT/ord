@@ -2315,7 +2315,7 @@ impl Index {
 
     let inscription_id_to_sequence_number = rtx.open_table(INSCRIPTION_ID_TO_SEQUENCE_NUMBER)?;
     let sequence_number_to_satpoint = rtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
-    let outpoint_to_txout = rtx.open_table(OUTPOINT_TO_TXOUT)?;
+    let outpoint_to_txout = rtx.open_table(OUTPOINT_TO_UTXO_ENTRY)?;
 
     let results = inscription_ids
       .into_iter()
@@ -2335,19 +2335,21 @@ impl Index {
 
         let outpoint = satpoint.outpoint;
 
-        let txout = outpoint_to_txout
-          .get(&outpoint.store())?
-          .map(|guard| TxOut::load(guard.value()))
-          .unwrap();
+        let utxo_entry = outpoint_to_txout.get(&outpoint.store())?.unwrap();
+        let utxo = utxo_entry.value().parse(self);
 
         let address: Address = self
           .settings
           .chain()
-          .address_from_script(&txout.script_pubkey)
+          .address_from_script(Script::from_bytes(utxo.script_pubkey()))
           .unwrap();
 
-        let inscription_state =
-          InscriptionState::new(inscription_id, satpoint, txout.value, address.to_string());
+        let inscription_state = InscriptionState::new(
+          inscription_id,
+          satpoint,
+          utxo.total_value(),
+          address.to_string(),
+        );
 
         Ok(inscription_state)
       })
@@ -2415,13 +2417,13 @@ impl Index {
   pub(crate) fn get_address_output(&self, outpoint: OutPoint) -> Result<Option<AddressOutput>> {
     let sat_ranges = self.list(outpoint)?;
 
-    let outpoint_to_txout = self.database.begin_read()?.open_table(OUTPOINT_TO_TXOUT)?;
-    let val = outpoint_to_txout.get(&outpoint.store())?;
-    let txout = if let Some(value) = val {
-      TxOut::load(value.value())
-    } else {
-      return Ok(None);
-    };
+    let outpoint_to_txout = self
+      .database
+      .begin_read()?
+      .open_table(OUTPOINT_TO_UTXO_ENTRY)?;
+
+    let utxo_entry = outpoint_to_txout.get(&outpoint.store())?.unwrap();
+    let utxo = utxo_entry.value().parse(self);
 
     let inscriptions = self.get_inscriptions_for_output(outpoint)?;
     let runes = self.get_rune_balances_for_output(outpoint)?;
@@ -2429,7 +2431,10 @@ impl Index {
     Ok(Some(api::AddressOutput::new(
       inscriptions,
       outpoint,
-      txout,
+      TxOut {
+        value: utxo.total_value(),
+        script_pubkey: ScriptBuf::from_bytes(utxo.script_pubkey().to_vec()),
+      },
       runes,
       sat_ranges,
     )))
