@@ -12,6 +12,7 @@ use {
     PreviewMarkdownHtml, PreviewModelHtml, PreviewPdfHtml, PreviewTextHtml, PreviewUnknownHtml,
     PreviewVideoHtml, RareTxt, RuneHtml, RunesHtml, SatHtml, TransactionHtml,
   },
+  api::AddressSummary,
   axum::{
     body,
     extract::{DefaultBodyLimit, Extension, Json, Path, Query},
@@ -56,6 +57,11 @@ enum SpawnConfig {
 #[derive(Deserialize)]
 struct Search {
   query: String,
+}
+// Define a struct to hold the query parameters
+#[derive(Deserialize)]
+struct InscriptionIdsParam {
+  ids: String,
 }
 
 #[derive(RustEmbed)]
@@ -164,6 +170,7 @@ impl Server {
       let router = Router::new()
         .route("/", get(Self::home))
         .route("/address/:address", get(Self::address))
+        .route("/address/:address/summary", get(Self::address_summary))
         .route("/block/:query", get(Self::block))
         .route("/blockcount", get(Self::block_count))
         .route("/blockhash", get(Self::block_hash))
@@ -193,6 +200,10 @@ impl Server {
         .route("/inscriptions", get(Self::inscriptions))
         .route("/inscriptions", post(Self::inscriptions_json))
         .route("/inscriptions/:page", get(Self::inscriptions_paginated))
+        .route(
+          "/inscription_chainstates",
+          get(Self::inscription_chainstates),
+        )
         .route(
           "/inscriptions/block/:height",
           get(Self::inscriptions_in_block),
@@ -854,6 +865,46 @@ impl Server {
         }
         .page(server_config)
         .into_response()
+      })
+    })
+  }
+
+  async fn address_summary(
+    Extension(server_config): Extension<Arc<ServerConfig>>,
+    Extension(index): Extension<Arc<Index>>,
+    Path(address): Path<Address<NetworkUnchecked>>,
+    AcceptJson(accept_json): AcceptJson,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      if !index.has_address_index() {
+        return Err(ServerError::NotFound(
+          "this server has no address index".to_string(),
+        ));
+      }
+
+      let address = address
+        .require_network(server_config.chain.network())
+        .map_err(|err| ServerError::BadRequest(err.to_string()))?;
+
+      let outputs = index.get_address_outputs(&address)?;
+      let mut address_outputs = Vec::new();
+      let mut cardinal_balance = 0;
+      for output in outputs {
+        match output {
+          Some(output) => {
+            if output.inscriptions.is_empty() && output.runes.is_empty() {
+              cardinal_balance += output.value;
+            }
+            address_outputs.push(output);
+          }
+          None => continue,
+        }
+      }
+
+      Ok(if accept_json {
+        Json(AddressSummary::new(address_outputs, cardinal_balance)).into_response()
+      } else {
+        StatusCode::NOT_FOUND.into_response()
       })
     })
   }
@@ -1705,6 +1756,30 @@ impl Server {
 
           response.push(info);
         }
+
+        Json(response).into_response()
+      } else {
+        StatusCode::NOT_FOUND.into_response()
+      })
+    })
+  }
+
+  async fn inscription_chainstates(
+    Extension(index): Extension<Arc<Index>>,
+    AcceptJson(accept_json): AcceptJson,
+    Query(params): Query<InscriptionIdsParam>,
+  ) -> ServerResult {
+    task::block_in_place(|| {
+      Ok(if accept_json {
+        let inscriptions_ids = params
+          .ids
+          .split(",")
+          .into_iter()
+          .map(|id| InscriptionId::from_str(&id))
+          .filter_map(|x| x.ok())
+          .collect();
+
+        let response = index.get_inscription_chainstates(inscriptions_ids)?;
 
         Json(response).into_response()
       } else {

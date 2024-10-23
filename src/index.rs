@@ -16,6 +16,7 @@ use {
     subcommand::{find::FindRangeOutput, server::query},
     templates::StatusHtml,
   },
+  api::{AddressOutput, InscriptionState},
   bitcoin::block::Header,
   bitcoincore_rpc::{
     json::{GetBlockHeaderResult, GetBlockStatsResult},
@@ -2277,6 +2278,14 @@ impl Index {
       .collect()
   }
 
+  pub fn get_address_outputs(&self, address: &Address) -> Result<Vec<Option<api::AddressOutput>>> {
+    self
+      .get_address_info(address)?
+      .into_iter()
+      .map(|outpoint| self.get_address_output(outpoint))
+      .collect()
+  }
+
   pub(crate) fn get_aggregated_rune_balances_for_outputs(
     &self,
     outputs: &Vec<OutPoint>,
@@ -2325,6 +2334,58 @@ impl Index {
     }
 
     Ok(acc)
+  }
+
+  pub fn get_inscription_chainstates(
+    &self,
+    inscription_ids: Vec<InscriptionId>,
+  ) -> Result<Vec<InscriptionState>> {
+    let rtx = self.database.begin_read()?;
+
+    let inscription_id_to_sequence_number = rtx.open_table(INSCRIPTION_ID_TO_SEQUENCE_NUMBER)?;
+    let sequence_number_to_satpoint = rtx.open_table(SEQUENCE_NUMBER_TO_SATPOINT)?;
+    let outpoint_to_txout = rtx.open_table(OUTPOINT_TO_UTXO_ENTRY)?;
+
+    let results = inscription_ids
+      .into_iter()
+      .map(|inscription_id| {
+        let sequence_number = inscription_id_to_sequence_number
+          .get(&inscription_id.store())?
+          .map(|guard| guard.value())
+          .ok_or_else(|| anyhow!("Failed to get sequence number"))?;
+
+        let satpoint = SatPoint::load(
+          *sequence_number_to_satpoint
+            .get(sequence_number)
+            .unwrap()
+            .unwrap()
+            .value(),
+        );
+
+        let outpoint = satpoint.outpoint;
+
+        let utxo_entry = outpoint_to_txout.get(&outpoint.store())?.unwrap();
+        let utxo = utxo_entry.value().parse(self);
+
+        let address: Address = self
+          .settings
+          .chain()
+          .address_from_script(Script::from_bytes(utxo.script_pubkey()))
+          .unwrap();
+
+        let inscription_state = InscriptionState::new(
+          inscription_id,
+          satpoint,
+          utxo.total_value(),
+          address.to_string(),
+        );
+
+        Ok(inscription_state)
+      })
+      .filter_map(|res: Result<InscriptionState>| res.ok())
+      .collect();
+
+    Ok(results)
   }
 
   pub(crate) fn get_output_info(&self, outpoint: OutPoint) -> Result<Option<(api::Output, TxOut)>> {
@@ -2379,6 +2440,32 @@ impl Index {
         spent,
       ),
       txout,
+    )))
+  }
+
+  pub(crate) fn get_address_output(&self, outpoint: OutPoint) -> Result<Option<AddressOutput>> {
+    let sat_ranges = self.list(outpoint)?;
+
+    let outpoint_to_txout = self
+      .database
+      .begin_read()?
+      .open_table(OUTPOINT_TO_UTXO_ENTRY)?;
+
+    let utxo_entry = outpoint_to_txout.get(&outpoint.store())?.unwrap();
+    let utxo = utxo_entry.value().parse(self);
+
+    let inscriptions = self.get_inscriptions_for_output(outpoint)?;
+    let runes = self.get_rune_balances_for_output(outpoint)?;
+
+    Ok(Some(api::AddressOutput::new(
+      inscriptions,
+      outpoint,
+      TxOut {
+        value: Amount::from_sat(utxo.total_value()),
+        script_pubkey: ScriptBuf::from_bytes(utxo.script_pubkey().to_vec()),
+      },
+      runes,
+      sat_ranges,
     )))
   }
 }
