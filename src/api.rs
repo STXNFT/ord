@@ -222,9 +222,70 @@ pub struct SatInscriptions {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct AddressOutput {
+  pub outpoint: OutPoint,
+  pub value: u64,
+  pub inscriptions: Vec<InscriptionId>,
+  pub sat_ranges: Option<Vec<(u64, u64)>>,
+  pub runes: BTreeMap<SpacedRune, Pile>,
+}
+
+impl AddressOutput {
+  pub fn new(
+    inscriptions: Vec<InscriptionId>,
+    outpoint: OutPoint,
+    tx_out: TxOut,
+    runes: BTreeMap<SpacedRune, Pile>,
+    sat_ranges: Option<Vec<(u64, u64)>>,
+  ) -> Self {
+    Self {
+      inscriptions,
+      outpoint,
+      runes,
+      sat_ranges,
+      value: tx_out.value.to_sat(),
+    }
+  }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct AddressInfo {
   pub outputs: Vec<OutPoint>,
   pub inscriptions: Vec<InscriptionId>,
   pub sat_balance: u64,
   pub runes_balances: Vec<(SpacedRune, Decimal, Option<char>)>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct AddressSummary {
+  outputs: Vec<AddressOutput>,
+  cardinal_balance: u64,
+}
+
+impl AddressSummary {
+  pub fn new(outputs: Vec<AddressOutput>, cardinal_balance: u64) -> Self {
+    Self {
+      outputs,
+      cardinal_balance,
+    }
+  }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct InscriptionState {
+  pub id: InscriptionId,
+  pub satpoint: SatPoint,
+  pub value: u64,
+  pub address: String,
+}
+
+impl InscriptionState {
+  pub fn new(id: InscriptionId, satpoint: SatPoint, value: u64, address: String) -> Self {
+    Self {
+      id,
+      satpoint,
+      value,
+      address,
+    }
+  }
 }
