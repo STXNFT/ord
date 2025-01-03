@@ -2510,13 +2510,13 @@ impl Index {
     let runes = self.get_rune_balances_for_output(outpoint)?;
 
     Ok(Some(api::AddressOutput::new(
-      inscriptions,
+      inscriptions.unwrap_or(Vec::new()),
       outpoint,
       TxOut {
         value: Amount::from_sat(utxo.total_value()),
         script_pubkey: ScriptBuf::from_bytes(utxo.script_pubkey().to_vec()),
       },
-      runes,
+      runes.unwrap_or(BTreeMap::new()),
       sat_ranges,
     )))
   }
