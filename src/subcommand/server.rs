@@ -188,7 +188,7 @@ impl Server {
       let router = Router::new()
         .route("/", get(Self::home))
         .route("/address/{address}", get(Self::address))
-        .route("/address/:address/summary", get(Self::address_summary))
+        .route("/address/{address}/summary", get(Self::address_summary))
         .route("/block/{query}", get(Self::block))
         .route("/blockcount", get(Self::block_count))
         .route("/blocks", get(Self::blocks))
@@ -213,7 +213,7 @@ impl Server {
         )
         .route("/inscriptions", get(Self::inscriptions))
         .route("/inscriptions", post(Self::inscriptions_json))
-        .route("/inscriptions/:page", get(Self::inscriptions_paginated))
+        .route("/inscriptions/{page}", get(Self::inscriptions_paginated))
         .route(
           "/inscription_chainstates",
           get(Self::inscription_chainstates),
