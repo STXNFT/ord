@@ -67,8 +67,9 @@ impl Plan {
       let commit_psbt = wallet
         .bitcoin_client()
         .wallet_process_psbt(
-          &base64::engine::general_purpose::STANDARD
-            .encode(Psbt::from_unsigned_tx(Self::remove_witnesses(commit_tx.clone()))?.serialize()),
+          &base64_encode(
+            &Psbt::from_unsigned_tx(Self::remove_witnesses(commit_tx.clone()))?.serialize(),
+          ),
           Some(false),
           None,
           None,
@@ -82,7 +83,7 @@ impl Plan {
         Some(commit_psbt),
         reveal_tx.compute_txid(),
         false,
-        Some(base64::engine::general_purpose::STANDARD.encode(reveal_psbt.serialize())),
+        Some(base64_encode(&reveal_psbt.serialize())),
         total_fees,
         self.inscriptions.clone(),
         rune,
@@ -614,7 +615,7 @@ impl Plan {
 
     let recovery_key_pair = key_pair.tap_tweak(&secp256k1, taproot_spend_info.merkle_root());
 
-    let (x_only_pub_key, _parity) = recovery_key_pair.to_inner().x_only_public_key();
+    let (x_only_pub_key, _parity) = recovery_key_pair.to_keypair().x_only_public_key();
     assert_eq!(
       Address::p2tr_tweaked(
         TweakedPublicKey::dangerous_assume_tweaked(x_only_pub_key),
@@ -674,7 +675,7 @@ impl Plan {
 
   fn backup_recovery_key(wallet: &Wallet, recovery_key_pair: TweakedKeypair) -> Result {
     let recovery_private_key = PrivateKey::new(
-      recovery_key_pair.to_inner().secret_key(),
+      recovery_key_pair.to_keypair().secret_key(),
       wallet.chain().network(),
     );
 

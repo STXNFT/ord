@@ -21,11 +21,15 @@ use {
     inscriptions::{
       inscription_id,
       media::{self, ImageRendering, Media},
-      teleburn, ParsedEnvelope,
+      teleburn,
     },
+    into_u64::IntoU64,
     into_usize::IntoUsize,
+    option_ext::OptionExt,
     outgoing::Outgoing,
+    properties::Properties,
     representation::Representation,
+    satscard::Satscard,
     settings::Settings,
     signer::Signer,
     subcommand::{OutputFormat, Subcommand, SubcommandResult},
@@ -43,10 +47,10 @@ use {
     hash_types::{BlockHash, TxMerkleNode},
     hashes::Hash,
     policy::MAX_STANDARD_TX_WEIGHT,
-    script,
+    script, secp256k1,
     transaction::Version,
-    Amount, Block, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
-    Witness,
+    Amount, Block, KnownHrp, Network, OutPoint, Script, ScriptBuf, Sequence, SignedAmount,
+    Transaction, TxIn, TxOut, Txid, Witness,
   },
   bitcoincore_rpc::{Client, RpcApi},
   chrono::{DateTime, TimeZone, Utc},
@@ -54,14 +58,13 @@ use {
   clap::{ArgGroup, Parser},
   error::{ResultExt, SnafuError},
   html_escaper::{Escape, Trusted},
-  http::{HeaderMap, StatusCode},
   lazy_static::lazy_static,
   ordinals::{
     varint, Artifact, Charm, Edict, Epoch, Etching, Height, Pile, Rarity, Rune, RuneId, Runestone,
     Sat, SatPoint, SpacedRune, Terms,
   },
   regex::Regex,
-  reqwest::Url,
+  reqwest::{header::HeaderMap, StatusCode, Url},
   serde::{Deserialize, Deserializer, Serialize},
   serde_with::{DeserializeFromStr, SerializeDisplay},
   snafu::{Backtrace, ErrorCompat, Snafu},
@@ -81,7 +84,7 @@ use {
     str::FromStr,
     sync::{
       atomic::{self, AtomicBool},
-      Arc, Mutex,
+      Arc, LazyLock, Mutex,
     },
     thread,
     time::{Duration, Instant, SystemTime},
@@ -94,7 +97,7 @@ pub use self::{
   chain::Chain,
   fee_rate::FeeRate,
   index::{Index, RuneEntry},
-  inscriptions::{Envelope, Inscription, InscriptionId},
+  inscriptions::{Envelope, Inscription, InscriptionId, ParsedEnvelope, RawEnvelope},
   object::Object,
   options::Options,
   wallet::transaction_builder::{Target, TransactionBuilder},
@@ -117,14 +120,18 @@ mod error;
 mod fee_rate;
 pub mod index;
 mod inscriptions;
+mod into_u64;
 mod into_usize;
 mod macros;
 mod object;
+mod option_ext;
 pub mod options;
 pub mod outgoing;
+mod properties;
 mod re;
 mod representation;
 pub mod runes;
+mod satscard;
 pub mod settings;
 mod signer;
 pub mod subcommand;
@@ -141,6 +148,19 @@ const TARGET_POSTAGE: Amount = Amount::from_sat(10_000);
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 static LISTENERS: Mutex<Vec<axum_server::Handle>> = Mutex::new(Vec::new());
 static INDEXER: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
+
+#[doc(hidden)]
+#[derive(Deserialize, Serialize)]
+pub struct SimulateRawTransactionResult {
+  #[serde(with = "bitcoin::amount::serde::as_btc")]
+  pub balance_change: SignedAmount,
+}
+
+#[doc(hidden)]
+#[derive(Deserialize, Serialize)]
+pub struct SimulateRawTransactionOptions {
+  include_watchonly: bool,
+}
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn fund_raw_transaction(
@@ -208,6 +228,16 @@ pub fn unbound_outpoint() -> OutPoint {
 
 fn uncheck(address: &Address) -> Address<NetworkUnchecked> {
   address.to_string().parse().unwrap()
+}
+
+pub fn base64_encode(data: &[u8]) -> String {
+  use base64::Engine;
+  base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+pub fn base64_decode(s: &str) -> Result<Vec<u8>> {
+  use base64::Engine;
+  Ok(base64::engine::general_purpose::STANDARD.decode(s)?)
 }
 
 fn default<T: Default>() -> T {
