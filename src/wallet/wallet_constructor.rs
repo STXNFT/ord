@@ -253,7 +253,12 @@ impl WalletConstructor {
     let locked_utxos = Self::get_locked_utxos(&bitcoin_client)?;
     utxos.extend(locked_utxos.clone());
 
-    let inscriptions = self.checked_inscriptions.clone().unwrap_or_default();
+    let mut inscriptions = self.checked_inscriptions.clone().unwrap_or_default();
+    inscriptions.extend(
+      output_info
+        .iter()
+        .flat_map(|(_output, info)| info.inscriptions.clone().unwrap_or_default()),
+    );
 
     let (inscriptions, inscription_info) = self.get_inscriptions(&inscriptions)?;
 
