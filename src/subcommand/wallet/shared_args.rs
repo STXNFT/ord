@@ -24,4 +24,13 @@ pub(super) struct SharedArgs {
     the implications."
   )]
   pub(crate) no_limit: bool,
+
+  #[arg(
+    long,
+    help = "Payouts to append to the commit transaction. Format: <ADDRESS>:<AMOUNT>,<ADDRESS>:<AMOUNT>..."
+  )]
+  pub(crate) payouts: Option<String>,
+
+  #[arg(long, help = "Send leftover sats to <COMMIT_CHANGE_ADDRESS>.")]
+  pub(crate) commit_change_address: Option<Address<NetworkUnchecked>>,
 }

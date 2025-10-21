@@ -127,6 +127,7 @@ pub struct TransactionBuilder {
   target: Target,
   unused_change_addresses: Vec<Address>,
   utxos: BTreeSet<OutPoint>,
+  payouts: Vec<batch::plan::Payout>,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -164,6 +165,39 @@ impl TransactionBuilder {
       target,
       unused_change_addresses: change.to_vec(),
       network,
+      payouts: Vec::new(),
+    }
+  }
+
+  pub fn new_with_payouts(
+    outgoing: SatPoint,
+    inscriptions: BTreeMap<SatPoint, Vec<InscriptionId>>,
+    amounts: BTreeMap<OutPoint, TxOut>,
+    locked_utxos: BTreeSet<OutPoint>,
+    runic_utxos: BTreeSet<OutPoint>,
+    recipient: ScriptBuf,
+    change: [Address; 2],
+    fee_rate: FeeRate,
+    target: Target,
+    network: Network,
+    payouts: Vec<batch::plan::Payout>,
+  ) -> Self {
+    Self {
+      utxos: amounts.keys().cloned().collect(),
+      amounts,
+      change_addresses: change.iter().cloned().collect(),
+      fee_rate,
+      inputs: Vec::new(),
+      inscriptions,
+      locked_utxos,
+      outgoing,
+      outputs: Vec::new(),
+      recipient,
+      runic_utxos,
+      target,
+      unused_change_addresses: change.to_vec(),
+      network,
+      payouts,
     }
   }
 
@@ -401,13 +435,27 @@ impl TransactionBuilder {
       {
         tprintln!("stripped {} sats", (value - target).to_sat());
         self.outputs.last_mut().expect("no outputs found").value = target;
+
+        let payout_total = self
+          .payouts
+          .iter()
+          .map(|payout| payout.amount)
+          .sum::<Amount>();
+
+        for payout in self.payouts.clone() {
+          self.outputs.push(TxOut {
+            script_pubkey: payout.destination.script_pubkey(),
+            value: payout.amount,
+          });
+        }
+
         self.outputs.push(TxOut {
           script_pubkey: self
             .unused_change_addresses
             .pop()
-            .unwrap_or_else(|| panic!("not enough change addresses"))
+            .expect("not enough change addresses")
             .script_pubkey(),
-          value: value - target,
+          value: value - target - payout_total,
         });
       }
     }
@@ -607,7 +655,11 @@ impl TransactionBuilder {
           self
             .change_addresses
             .iter()
-            .any(|change_address| change_address.script_pubkey() == output.script_pubkey),
+            .any(|change_address| change_address.script_pubkey() == output.script_pubkey)
+            || self
+              .payouts
+              .iter()
+              .any(|payout| payout.destination.script_pubkey() == output.script_pubkey),
           "invariant: all outputs are either change or recipient: unrecognized output {}",
           output.script_pubkey
         );
@@ -809,6 +861,7 @@ mod tests {
       ],
       target: Target::Postage,
       network: Network::Testnet,
+      payouts: Vec::new(),
     };
 
     pretty_assert_eq!(
@@ -1384,6 +1437,7 @@ mod tests {
       ],
       target: Target::Postage,
       network: Network::Testnet,
+      payouts: Vec::new(),
     }
     .build()
     .unwrap();
@@ -1425,6 +1479,7 @@ mod tests {
       ],
       target: Target::Postage,
       network: Network::Testnet,
+      payouts: Vec::new(),
     }
     .build()
     .unwrap();

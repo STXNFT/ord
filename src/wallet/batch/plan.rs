@@ -15,6 +15,14 @@ pub struct Plan {
   pub(crate) reveal_fee_rate: FeeRate,
   pub(crate) reveal_satpoints: Vec<(SatPoint, TxOut)>,
   pub(crate) satpoint: Option<SatPoint>,
+  pub(crate) payouts: Vec<Payout>,
+  pub(crate) commit_change_address: Option<Address>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+pub struct Payout {
+  pub destination: Address,
+  pub amount: Amount,
 }
 
 impl Default for Plan {
@@ -34,6 +42,8 @@ impl Default for Plan {
       reveal_fee_rate: 1.0.try_into().unwrap(),
       reveal_satpoints: Vec::new(),
       satpoint: None,
+      payouts: Vec::new(),
+      commit_change_address: None,
     }
   }
 }
@@ -46,6 +56,11 @@ impl Plan {
     utxos: &BTreeMap<OutPoint, TxOut>,
     wallet: &Wallet,
   ) -> SubcommandResult {
+    let commit_change_address = self
+      .commit_change_address
+      .clone()
+      .unwrap_or(wallet.get_change_address()?);
+
     let Transactions {
       commit_tx,
       commit_vout,
@@ -59,7 +74,7 @@ impl Plan {
       locked_utxos.clone(),
       runic_utxos,
       utxos.clone(),
-      [wallet.get_change_address()?, wallet.get_change_address()?],
+      [commit_change_address, wallet.get_change_address()?],
       wallet.get_change_address()?,
     )?;
 
@@ -524,19 +539,35 @@ impl Plan {
       target_value += TARGET_POSTAGE;
     }
 
-    let unsigned_commit_tx = TransactionBuilder::new(
-      satpoint,
-      wallet_inscriptions,
-      utxos.clone(),
-      locked_utxos.clone(),
-      runic_utxos,
-      commit_tx_address.script_pubkey(),
-      commit_change,
-      self.commit_fee_rate,
-      Target::Value(target_value),
-      chain.network(),
-    )
-    .build_transaction()?;
+    let unsigned_commit_tx = match self.payouts.clone().is_empty() {
+      true => TransactionBuilder::new(
+        satpoint,
+        wallet_inscriptions,
+        utxos.clone(),
+        locked_utxos.clone(),
+        runic_utxos,
+        commit_tx_address.script_pubkey(),
+        commit_change,
+        self.commit_fee_rate,
+        Target::Value(target_value),
+        chain.network(),
+      )
+      .build_transaction()?,
+      false => TransactionBuilder::new_with_payouts(
+        satpoint,
+        wallet_inscriptions,
+        utxos.clone(),
+        locked_utxos.clone(),
+        runic_utxos,
+        commit_tx_address.script_pubkey(),
+        commit_change,
+        self.commit_fee_rate,
+        Target::Value(target_value),
+        chain.network(),
+        self.payouts.clone(),
+      )
+      .build_transaction()?,
+    };
 
     let (vout, _commit_output) = unsigned_commit_tx
       .output

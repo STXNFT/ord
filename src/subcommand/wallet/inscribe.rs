@@ -108,6 +108,8 @@ impl Inscribe {
       } else {
         self.satpoint
       },
+      payouts: vec![],
+      commit_change_address: None,
     }
     .inscribe(
       &wallet.locked_utxos().clone().into_keys().collect(),

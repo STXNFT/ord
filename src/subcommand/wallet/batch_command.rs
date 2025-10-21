@@ -1,3 +1,5 @@
+use crate::wallet::batch::plan::Payout;
+
 use super::*;
 
 #[derive(Debug, Parser)]
@@ -51,6 +53,39 @@ impl Batch {
       Self::check_etching(&wallet, &etching)?;
     }
 
+    let payouts = match self.shared.payouts {
+      Some(payouts_str) => payouts_str
+        .split(',')
+        .map(|payout| {
+          let mut parts = payout.split(':');
+          let address = parts.next().unwrap();
+          let amount_sats = parts.next().unwrap().parse::<u64>().unwrap();
+          let destination = Address::from_str(address)
+            .unwrap()
+            .require_network(wallet.chain().network())
+            .unwrap();
+          let amount = Amount::from_sat(amount_sats);
+          Payout {
+            destination,
+            amount,
+          }
+        })
+        .collect(),
+      _ => vec![],
+    };
+
+    let commit_change_address = if self.shared.commit_change_address.is_some() {
+      Some(
+        self
+          .shared
+          .commit_change_address
+          .unwrap()
+          .require_network(wallet.chain().network())?,
+      )
+    } else {
+      None
+    };
+
     batch::Plan {
       commit_fee_rate: self.shared.commit_fee_rate.unwrap_or(self.shared.fee_rate),
       destinations,
@@ -70,6 +105,8 @@ impl Batch {
       } else {
         batchfile.satpoint
       },
+      payouts,
+      commit_change_address,
     }
     .inscribe(
       &locked_utxos.into_keys().collect(),
