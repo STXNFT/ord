@@ -7,6 +7,8 @@ pub(crate) struct WalletConstructor {
   no_sync: bool,
   rpc_url: Url,
   settings: Settings,
+  checked_inscriptions: Option<Vec<InscriptionId>>,
+  checked_satpoint: Option<SatPoint>,
 }
 
 impl WalletConstructor {
@@ -15,6 +17,8 @@ impl WalletConstructor {
     no_sync: bool,
     settings: Settings,
     rpc_url: Url,
+    checked_inscriptions: Option<Vec<InscriptionId>>,
+    checked_satpoint: Option<SatPoint>,
   ) -> Result<Wallet> {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -30,17 +34,35 @@ impl WalletConstructor {
       );
     }
 
-    Self {
-      ord_client: reqwest::blocking::ClientBuilder::new()
-        .timeout(None)
-        .default_headers(headers.clone())
-        .build()?,
-      name,
-      no_sync,
-      rpc_url,
-      settings,
+    if checked_satpoint.is_none() {
+      Self {
+        ord_client: reqwest::blocking::ClientBuilder::new()
+          .timeout(None)
+          .default_headers(headers.clone())
+          .build()?,
+        name,
+        no_sync,
+        rpc_url,
+        settings,
+        checked_inscriptions,
+        checked_satpoint,
+      }
+      .build()
+    } else {
+      Self {
+        ord_client: reqwest::blocking::ClientBuilder::new()
+          .timeout(None)
+          .default_headers(headers.clone())
+          .build()?,
+        name,
+        no_sync,
+        rpc_url,
+        settings,
+        checked_inscriptions,
+        checked_satpoint,
+      }
+      .build_unchecked()
     }
-    .build()
   }
 
   pub(crate) fn build(self) -> Result<Wallet> {
@@ -119,6 +141,119 @@ impl WalletConstructor {
       .iter()
       .flat_map(|(_output, info)| info.inscriptions.clone().unwrap_or_default())
       .collect::<Vec<InscriptionId>>();
+
+    let (inscriptions, inscription_info) = self.get_inscriptions(&inscriptions)?;
+
+    let status = self.get_server_status()?;
+
+    Ok(Wallet {
+      bitcoin_client,
+      database,
+      has_rune_index: status.rune_index,
+      has_sat_index: status.sat_index,
+      inscription_info,
+      inscriptions,
+      locked_utxos,
+      ord_client: self.ord_client,
+      output_info,
+      rpc_url: self.rpc_url,
+      settings: self.settings,
+      utxos,
+    })
+  }
+
+  pub(crate) fn build_unchecked(self) -> Result<Wallet> {
+    let database = Wallet::open_database(&self.name, &self.settings)?;
+
+    let bitcoin_client = {
+      let client =
+        Wallet::check_version(self.settings.bitcoin_rpc_client(Some(self.name.clone()))?)?;
+
+      if !client.list_wallets()?.contains(&self.name) {
+        loop {
+          match client.load_wallet(&self.name) {
+            Ok(_) => {
+              break;
+            }
+            Err(bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(err)))
+              if err.code == -4 && err.message == "Wallet already loading." =>
+            {
+              // wallet loading
+              eprint!(".");
+              thread::sleep(Duration::from_secs(3));
+              continue;
+            }
+            Err(bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(err)))
+              if err.code == -35 =>
+            {
+              // wallet already loaded
+              break;
+            }
+            Err(err) => {
+              bail!("Failed to load wallet {}: {err}", self.name);
+            }
+          }
+        }
+      }
+
+      if client.get_wallet_info()?.private_keys_enabled {
+        Wallet::check_descriptors(
+          &self.name,
+          client
+            .call::<ListDescriptorsResult>("listdescriptors", &[serde_json::Value::Null])?
+            .descriptors,
+        )?;
+      }
+
+      client
+    };
+
+    let bitcoin_block_count = bitcoin_client.get_block_count().unwrap() + 1;
+
+    if !self.no_sync {
+      for i in 0.. {
+        let ord_block_count = self.get("/blockcount")?.text()?.parse::<u64>().expect(
+          "wallet failed to retrieve block count from server. Make sure `ord server` is running.",
+        );
+
+        if ord_block_count >= bitcoin_block_count {
+          break;
+        } else if i == 20 {
+          bail!(
+            "`ord server` {} blocks behind `bitcoind`, consider using `--no-sync` to ignore this error",
+            bitcoin_block_count - ord_block_count
+          );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+      }
+    }
+
+    if !self.checked_satpoint.is_some() {
+      bail!("checked_satpoint is not set");
+    }
+
+    let outpoint = self.checked_satpoint.unwrap().outpoint;
+    let output_info = self.get_output_info(vec![outpoint])?;
+    let output = output_info.get(&outpoint).unwrap().clone();
+    let address = output
+      .address
+      .unwrap()
+      .require_network(self.settings.chain().network())?
+      .clone();
+
+    let mut utxos = BTreeMap::new();
+    utxos.insert(
+      outpoint,
+      TxOut {
+        script_pubkey: address.script_pubkey(),
+        value: Amount::from_sat(output.value),
+      },
+    );
+
+    let locked_utxos = Self::get_locked_utxos(&bitcoin_client)?;
+    utxos.extend(locked_utxos.clone());
+
+    let inscriptions = self.checked_inscriptions.clone().unwrap_or_default();
 
     let (inscriptions, inscription_info) = self.get_inscriptions(&inscriptions)?;
 

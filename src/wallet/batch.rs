@@ -1194,4 +1194,86 @@ mod tests {
       }
     );
   }
+
+  #[test]
+  fn batch_inscribe_with_payouts() {
+    let utxos = vec![(outpoint(1), tx_out(100_000, address(0)))];
+    let inscriptions = BTreeMap::new();
+
+    let inscription = inscription("text/plain", "ord");
+    let satpoint = None;
+    let commit_address = change(0);
+    let reveal_address = recipient_address();
+    let commit_fee_rate = 3.3;
+    let fee_rate = 1.0;
+    let payouts = vec![
+      batch::plan::Payout {
+        destination: change(2),
+        amount: Amount::from_sat(10_000),
+      },
+      batch::plan::Payout {
+        destination: change(3),
+        amount: Amount::from_sat(20_000),
+      },
+    ];
+
+    let batch::Transactions {
+      commit_tx,
+      reveal_tx,
+      ..
+    } = batch::Plan {
+      satpoint,
+      parent_info: Vec::new(),
+      inscriptions: vec![inscription],
+      destinations: vec![reveal_address],
+      commit_fee_rate: FeeRate::try_from(commit_fee_rate).unwrap(),
+      reveal_fee_rate: FeeRate::try_from(fee_rate).unwrap(),
+      no_limit: false,
+      reinscribe: false,
+      postages: vec![TARGET_POSTAGE],
+      mode: batch::Mode::SharedOutput,
+      payouts,
+      ..default()
+    }
+    .create_batch_transactions(
+      inscriptions,
+      Chain::Signet,
+      BTreeSet::new(),
+      BTreeSet::new(),
+      utxos.into_iter().collect(),
+      [commit_address, change(1)],
+      change(2),
+    )
+    .unwrap();
+
+    let sig_vbytes = 17;
+    let fee = FeeRate::try_from(commit_fee_rate)
+      .unwrap()
+      .fee(commit_tx.vsize() + sig_vbytes)
+      .to_sat();
+
+    let reveal_value = commit_tx
+      .output
+      .iter()
+      .map(|o| o.value)
+      .reduce(|acc, i| acc + i)
+      .unwrap();
+
+    assert_eq!(reveal_value.to_sat(), 100_000 - fee);
+
+    let fee = FeeRate::try_from(fee_rate)
+      .unwrap()
+      .fee(reveal_tx.vsize())
+      .to_sat();
+
+    assert_eq!(
+      reveal_tx.output[0].value.to_sat(),
+      100_000 - fee - (100_000 - commit_tx.output[0].value.to_sat()),
+    );
+
+    assert_eq!(commit_tx.output[1].script_pubkey, change(2).script_pubkey());
+    assert_eq!(commit_tx.output[1].value.to_sat(), 10_000);
+    assert_eq!(commit_tx.output[2].script_pubkey, change(3).script_pubkey());
+    assert_eq!(commit_tx.output[2].value.to_sat(), 20_000);
+  }
 }
