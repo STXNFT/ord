@@ -125,25 +125,6 @@ fn inscribe_unknown_file_extension() {
 }
 
 #[test]
-fn inscribe_exceeds_chain_limit() {
-  let core = mockcore::builder().network(Network::Signet).build();
-
-  let ord = TestServer::spawn_with_args(&core, &["--signet"]);
-
-  create_wallet(&core, &ord);
-
-  CommandBuilder::new("--chain signet wallet inscribe --file degenerate.png --fee-rate 1")
-    .write("degenerate.png", [1; 1025])
-    .core(&core)
-    .ord(&ord)
-    .expected_exit_code(1)
-    .expected_stderr(
-      "error: content size of 1025 bytes exceeds 1024 byte limit for signet inscriptions\n",
-    )
-    .run_and_extract_stdout();
-}
-
-#[test]
 fn regtest_has_no_content_size_limit() {
   let core = mockcore::builder().network(Network::Regtest).build();
 

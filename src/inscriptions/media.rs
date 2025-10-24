@@ -4,7 +4,6 @@ use {
   brotli::enc::backward_references::BrotliEncoderMode::{
     self, BROTLI_MODE_FONT as FONT, BROTLI_MODE_GENERIC as GENERIC, BROTLI_MODE_TEXT as TEXT,
   },
-  mp4::{MediaType, Mp4Reader, TrackType},
 };
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -122,10 +121,6 @@ impl Media {
 
     let extension = extension.to_lowercase();
 
-    if extension == "mp4" {
-      Media::check_mp4_codec(path)?;
-    }
-
     for (content_type, mode, _, extensions) in Self::TABLE {
       if extensions.contains(&extension.as_str()) {
         return Ok((*content_type, *mode));
@@ -143,27 +138,6 @@ impl Media {
       "unsupported file extension `.{extension}`, supported extensions: {}",
       extensions.join(" "),
     ))
-  }
-
-  pub(crate) fn check_mp4_codec(path: &Path) -> Result<(), Error> {
-    let f = File::open(path)?;
-    let size = f.metadata()?.len();
-    let reader = BufReader::new(f);
-
-    let mp4 = Mp4Reader::read_header(reader, size)?;
-
-    for track in mp4.tracks().values() {
-      if let TrackType::Video = track.track_type()? {
-        let media_type = track.media_type()?;
-        if media_type != MediaType::H264 {
-          return Err(anyhow!(
-            "Unsupported video codec, only H.264 is supported in MP4: {media_type}"
-          ));
-        }
-      }
-    }
-
-    Ok(())
   }
 }
 
@@ -210,16 +184,6 @@ mod tests {
       Media::content_type_for_path(Path::new("pepe.foo")).unwrap_err(),
       r"unsupported file extension `\.foo`, supported extensions: apng .*"
     );
-  }
-
-  #[test]
-  fn h264_in_mp4_is_allowed() {
-    assert!(Media::check_mp4_codec(Path::new("examples/h264.mp4")).is_ok(),);
-  }
-
-  #[test]
-  fn av1_in_mp4_is_rejected() {
-    assert!(Media::check_mp4_codec(Path::new("examples/av1.mp4")).is_err(),);
   }
 
   #[test]

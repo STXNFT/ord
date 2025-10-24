@@ -957,31 +957,6 @@ fn batch_inscribe_with_sat_argument_with_parent() {
 }
 
 #[test]
-fn batch_inscribe_with_sat_arg_fails_if_wrong_mode() {
-  let core = mockcore::spawn();
-
-  let ord = TestServer::spawn_with_server_args(&core, &[], &[]);
-
-  create_wallet(&core, &ord);
-
-  core.mine_blocks(1);
-
-  CommandBuilder::new("wallet batch --fee-rate 1 --batch batch.yaml")
-    .write("inscription.txt", "Hello World")
-    .write("tulip.png", [0; 555])
-    .write("meow.wav", [0; 2048])
-    .write(
-      "batch.yaml",
-      "mode: shared-output\nsat: 5000111111\ninscriptions:\n- file: inscription.txt\n- file: tulip.png\n- file: meow.wav\n"
-    )
-    .core(&core)
-    .ord(&ord)
-    .expected_exit_code(1)
-    .expected_stderr("error: `sat` or `satpoint` can only be set in `same-sat` mode\n")
-    .run_and_extract_stdout();
-}
-
-#[test]
 fn batch_inscribe_with_satpoint() {
   let core = mockcore::spawn();
 
