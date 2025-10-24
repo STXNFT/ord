@@ -79,7 +79,7 @@ use {
     ffi::OsString,
     fmt::{self, Display, Formatter},
     fs::{self, File},
-    io::{self, BufReader, Cursor, Read},
+    io::{self, Cursor, Read},
     mem,
     net::ToSocketAddrs,
     path::{Path, PathBuf},
