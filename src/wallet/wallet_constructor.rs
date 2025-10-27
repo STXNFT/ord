@@ -224,10 +224,6 @@ impl WalletConstructor {
       }
     }
 
-    if !self.whitelisted_outputs.is_empty() {
-      bail!("checked_satpoint is not set");
-    }
-
     let outpoints = self.whitelisted_outputs.clone();
     let output_info = self.get_output_info(outpoints)?;
 
