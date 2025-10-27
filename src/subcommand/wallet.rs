@@ -45,10 +45,7 @@ pub(crate) struct WalletCommand {
   pub(crate) subcommand: Subcommand,
 
   #[arg(long, help = "")]
-  pub(crate) checked_inscriptions: Option<Vec<InscriptionId>>,
-
-  #[arg(long, help = "")]
-  pub(crate) checked_satpoint: Option<SatPoint>,
+  pub(crate) whitelisted_outputs: Vec<OutPoint>,
 }
 
 #[derive(Debug, Parser)]
@@ -124,8 +121,7 @@ impl WalletCommand {
         .unwrap_or("http://127.0.0.1:80")
         .parse::<Url>()
         .context("invalid server URL")?,
-      self.checked_inscriptions,
-      self.checked_satpoint,
+      self.whitelisted_outputs,
     )?;
 
     match self.subcommand {

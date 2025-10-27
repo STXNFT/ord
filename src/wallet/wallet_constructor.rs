@@ -7,8 +7,7 @@ pub(crate) struct WalletConstructor {
   no_sync: bool,
   rpc_url: Url,
   settings: Settings,
-  checked_inscriptions: Option<Vec<InscriptionId>>,
-  checked_satpoint: Option<SatPoint>,
+  whitelisted_outputs: Vec<OutPoint>,
 }
 
 impl WalletConstructor {
@@ -17,8 +16,7 @@ impl WalletConstructor {
     no_sync: bool,
     settings: Settings,
     rpc_url: Url,
-    checked_inscriptions: Option<Vec<InscriptionId>>,
-    checked_satpoint: Option<SatPoint>,
+    whitelisted_outputs: Vec<OutPoint>,
   ) -> Result<Wallet> {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -34,7 +32,7 @@ impl WalletConstructor {
       );
     }
 
-    if checked_satpoint.is_none() {
+    if whitelisted_outputs.is_empty() {
       Self {
         ord_client: reqwest::blocking::ClientBuilder::new()
           .timeout(None)
@@ -44,8 +42,7 @@ impl WalletConstructor {
         no_sync,
         rpc_url,
         settings,
-        checked_inscriptions,
-        checked_satpoint,
+        whitelisted_outputs,
       }
       .build()
     } else {
@@ -58,8 +55,7 @@ impl WalletConstructor {
         no_sync,
         rpc_url,
         settings,
-        checked_inscriptions,
-        checked_satpoint,
+        whitelisted_outputs,
       }
       .build_unchecked()
     }
@@ -228,37 +224,32 @@ impl WalletConstructor {
       }
     }
 
-    if !self.checked_satpoint.is_some() {
+    if !self.whitelisted_outputs.is_empty() {
       bail!("checked_satpoint is not set");
     }
 
-    let outpoint = self.checked_satpoint.unwrap().outpoint;
-    let output_info = self.get_output_info(vec![outpoint])?;
-    let output = output_info.get(&outpoint).unwrap().clone();
-    let address = output
-      .address
-      .unwrap()
-      .require_network(self.settings.chain().network())?
-      .clone();
+    let outpoints = self.whitelisted_outputs.clone();
+    let output_info = self.get_output_info(outpoints)?;
 
     let mut utxos = BTreeMap::new();
-    utxos.insert(
-      outpoint,
-      TxOut {
-        script_pubkey: address.script_pubkey(),
-        value: Amount::from_sat(output.value),
-      },
-    );
+    for (outpoint, output) in &output_info {
+      utxos.insert(
+        outpoint.clone(),
+        TxOut {
+          script_pubkey: output.script_pubkey.clone(),
+          value: Amount::from_sat(output.value),
+        },
+      );
+    }
 
     let locked_utxos = Self::get_locked_utxos(&bitcoin_client)?;
     utxos.extend(locked_utxos.clone());
 
-    let mut inscriptions = self.checked_inscriptions.clone().unwrap_or_default();
-    inscriptions.extend(
-      output_info
-        .iter()
-        .flat_map(|(_output, info)| info.inscriptions.clone().unwrap_or_default()),
-    );
+    let inscriptions = output_info
+      .clone()
+      .iter()
+      .flat_map(|(_output, info)| info.inscriptions.clone().unwrap_or_default())
+      .collect::<Vec<InscriptionId>>();
 
     let (inscriptions, inscription_info) = self.get_inscriptions(&inscriptions)?;
 

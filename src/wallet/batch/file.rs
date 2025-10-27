@@ -32,6 +32,15 @@ impl File {
       "batchfile cannot set both `sat` and `satpoint`",
     );
 
+    let sat_or_satpoint = batchfile.sat.is_some() || batchfile.satpoint.is_some();
+
+    if sat_or_satpoint {
+      ensure!(
+        batchfile.mode == Mode::SameSat,
+        "`sat` or `satpoint` can only be set in `same-sat` mode",
+      );
+    }
+
     if batchfile
       .inscriptions
       .iter()
