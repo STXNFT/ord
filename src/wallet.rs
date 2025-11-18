@@ -245,7 +245,11 @@ impl Wallet {
     )
   }
 
-  pub(crate) fn get_parent_info(&self, parents: &[InscriptionId]) -> Result<Vec<ParentInfo>> {
+  pub(crate) fn get_parent_info(
+    &self,
+    parents: &[InscriptionId],
+    change_address: Address,
+  ) -> Result<Vec<ParentInfo>> {
     let mut parent_info = Vec::new();
     for parent_id in parents {
       if !self.inscription_exists(*parent_id)? {
@@ -265,7 +269,7 @@ impl Wallet {
         .clone();
 
       parent_info.push(ParentInfo {
-        destination: self.get_change_address()?,
+        destination: change_address.clone(),
         id: *parent_id,
         location: satpoint,
         tx_out,

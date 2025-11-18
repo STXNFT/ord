@@ -33,4 +33,7 @@ pub(super) struct SharedArgs {
 
   #[arg(long, help = "Send leftover sats to <COMMIT_CHANGE_ADDRESS>.")]
   pub(crate) commit_change_address: Option<Address<NetworkUnchecked>>,
+
+  #[arg(long, help = "Send parent back to <PARENT_CHANGE_ADDRESS>.")]
+  pub(crate) parent_change_address: Option<Address<NetworkUnchecked>>,
 }

@@ -106,6 +106,16 @@ impl Inscribe {
       None
     };
 
+    let parent_change_address = if self.shared.parent_change_address.is_some() {
+      self
+        .shared
+        .parent_change_address
+        .unwrap()
+        .require_network(wallet.chain().network())?
+    } else {
+      wallet.get_change_address()?
+    };
+
     batch::Plan {
       commit_fee_rate: self.shared.commit_fee_rate.unwrap_or(self.shared.fee_rate),
       destinations: vec![match self.destination.clone() {
@@ -131,7 +141,7 @@ impl Inscribe {
       mode: batch::Mode::SeparateOutputs,
       no_backup: self.shared.no_backup,
       no_limit: self.shared.no_limit,
-      parent_info: wallet.get_parent_info(self.parent.as_slice())?,
+      parent_info: wallet.get_parent_info(self.parent.as_slice(), parent_change_address)?,
       postages: vec![self.postage.unwrap_or(TARGET_POSTAGE)],
       reinscribe: self.reinscribe,
       reveal_fee_rate: self.shared.fee_rate,

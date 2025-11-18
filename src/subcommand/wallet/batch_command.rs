@@ -29,7 +29,16 @@ impl Batch {
       }
     }
 
-    let parent_info = wallet.get_parent_info(&batchfile.parents)?;
+    let parent_change_address = if self.shared.parent_change_address.is_some() {
+      self
+        .shared
+        .parent_change_address
+        .unwrap()
+        .require_network(wallet.chain().network())?
+    } else {
+      wallet.get_change_address()?
+    };
+    let parent_info = wallet.get_parent_info(&batchfile.parents, parent_change_address)?;
 
     let (inscriptions, reveal_satpoints, postages, destinations) = batchfile.inscriptions(
       &wallet,
