@@ -34,7 +34,7 @@ pub(crate) struct Inscribe {
   #[clap(long, help = "Set inscription metaprotocol to <METAPROTOCOL>.")]
   pub(crate) metaprotocol: Option<String>,
   #[clap(long, help = "Make inscription a child of <PARENT>.")]
-  pub(crate) parent: Option<InscriptionId>,
+  pub(crate) parent: Vec<InscriptionId>,
   #[arg(
     long,
     help = "Include <AMOUNT> postage with inscription. [default: 10000sat]",
@@ -116,6 +116,8 @@ impl Inscribe {
       wallet.get_change_address()?
     };
 
+    let parents = self.parent.clone();
+
     batch::Plan {
       commit_fee_rate: self.shared.commit_fee_rate.unwrap_or(self.shared.fee_rate),
       destinations: vec![match self.destination.clone() {
@@ -141,7 +143,7 @@ impl Inscribe {
       mode: batch::Mode::SeparateOutputs,
       no_backup: self.shared.no_backup,
       no_limit: self.shared.no_limit,
-      parent_info: wallet.get_parent_info(self.parent.as_slice(), parent_change_address)?,
+      parent_info: wallet.get_parent_info(&parents, parent_change_address)?,
       postages: vec![self.postage.unwrap_or(TARGET_POSTAGE)],
       reinscribe: self.reinscribe,
       reveal_fee_rate: self.shared.fee_rate,
