@@ -225,6 +225,7 @@ impl WalletConstructor {
     }
 
     let outpoints = self.whitelisted_outputs.clone();
+
     let output_info = self.get_output_info(outpoints)?;
 
     let mut utxos = BTreeMap::new();
@@ -242,7 +243,6 @@ impl WalletConstructor {
     utxos.extend(locked_utxos.clone());
 
     let inscriptions = output_info
-      .clone()
       .iter()
       .flat_map(|(_output, info)| info.inscriptions.clone().unwrap_or_default())
       .collect::<Vec<InscriptionId>>();
